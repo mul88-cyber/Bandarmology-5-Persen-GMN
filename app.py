@@ -40,29 +40,29 @@ st.set_page_config(
 )
 
 # ==============================================================================
-# 2. CUSTOM CSS - PROFESSIONAL LOOK (FIXED CONTRAST)
+# 2. CUSTOM CSS - PROFESSIONAL LOOK (FIXED FOR LIGHT MODE)
 # ==============================================================================
 st.markdown("""
 <style>
     /* Main container */
     .main > div { padding: 0rem 1rem; }
     
-    /* Metric cards */
+    /* Metric cards - DIGANTI JADI WARNA GELAP */
     div[data-testid="stMetricValue"] {
         font-size: 1.8rem !important;
         font-weight: 700;
-        color: #FFFFFF !important;
+        color: #000000 !important; /* UBAH KE HITAM */
     }
     div[data-testid="stMetricLabel"] {
         font-size: 0.9rem !important;
         font-weight: 500;
-        color: #CCCCCC !important;
+        color: #444444 !important; /* UBAH KE ABU TUA */
     }
     
-    /* Tabs styling - HIGH CONTRAST */
+    /* Tabs styling */
     .stTabs [data-baseweb="tab-list"] {
         gap: 2px;
-        background-color: #0E1117;
+        background-color: #f0f2f6; /* Ubah background tab container jadi terang */
         padding: 0.5rem;
         border-radius: 10px;
     }
@@ -71,61 +71,48 @@ st.markdown("""
         padding: 0px 16px;
         border-radius: 8px;
         font-weight: 600;
-        color: #FFFFFF !important;
-        background-color: #1E1E1E;
-        border: 1px solid #333333;
+        color: #31333F !important; /* Teks Tab jadi Gelap */
+        background-color: #ffffff; /* Tab tidak aktif jadi putih */
+        border: 1px solid #ddd;
     }
     .stTabs [data-baseweb="tab"]:hover {
-        background-color: #2D2D2D;
+        background-color: #f9f9f9;
         border-color: #00CC96;
     }
     .stTabs [aria-selected="true"] {
         background-color: #00CC96 !important;
-        color: #000000 !important;
+        color: #ffffff !important; /* Tab aktif teks putih */
         border-bottom: 2px solid #00FF00;
         font-weight: 700;
     }
     
     /* Dataframes */
     .stDataFrame {
-        border: 1px solid #2D2D2D;
+        border: 1px solid #ddd;
         border-radius: 10px;
         padding: 0.5rem;
     }
     
-    /* Headers */
+    /* Headers - DIGANTI JADI HITAM */
     h1, h2, h3 {
-        color: #FFFFFF !important;
+        color: #000000 !important; /* Judul jadi Hitam */
         font-weight: 600;
     }
     
     /* Divider */
     hr {
         margin: 1.5rem 0;
-        border-color: #2D2D2D;
+        border-color: #ddd;
     }
     
-    /* Sidebar text */
+    /* Sidebar text - HAPUS PAKSAAN WARNA PUTIH AGAR MENGIKUTI TEMA */
     .css-1aumxhk, .css-1wrcr25 {
-        color: #FFFFFF !important;
+        /* color: #FFFFFF !important; <-- HAPUS BARIS INI */
     }
     
     /* Warning/Info boxes */
     .stAlert {
-        background-color: #1E1E1E;
         border-left: 5px solid #00CC96;
-        color: #FFFFFF;
-    }
-    
-    /* Progress bar */
-    .stProgress > div > div {
-        background-color: #00CC96;
-    }
-    
-    /* Success message */
-    .stSuccess {
-        background-color: #1E3A2E;
-        color: #FFFFFF;
     }
 </style>
 """, unsafe_allow_html=True)
