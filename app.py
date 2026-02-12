@@ -394,7 +394,11 @@ def process_forensics(df):
         )
         forensic_results.columns = ['REAL_OWNER', 'HOLDING_TYPE', 'ACCOUNT_STATUS', 'BANK_SOURCE']
         
-        # Merge back
+        # ✅ FIX: Tambahkan kolom untuk merge
+        forensic_results['Nama Pemegang Saham'] = unique_pairs['Nama Pemegang Saham'].values
+        forensic_results['Nama Rekening Efek'] = unique_pairs['Nama Rekening Efek'].values
+        
+        # Merge back ke data utama
         df_result = pd.merge(df, forensic_results, 
                             on=['Nama Pemegang Saham', 'Nama Rekening Efek'], 
                             how='left')
