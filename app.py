@@ -700,7 +700,7 @@ def render_repo_monitor_tab(df, df_last):
         
         st.subheader("📋 Daftar Akun Terindikasi Repo/Gadai")
         display_cols = ['REAL_OWNER', 'Kode Efek', 'Nama Pemegang Saham', 
-                       'BANK_SOURCE', 'Jumlah Saham (Curr)']
+                        'BANK_SOURCE', 'Jumlah Saham (Curr)']
         
         st.dataframe(
             pledge_last[display_cols].sort_values('Jumlah Saham (Curr)', ascending=False)
@@ -901,8 +901,8 @@ def render_smart_money_tab(ksei_df, price_df, filtered_stocks=None):
     }).reset_index()
     
     holder_perf.columns = ['REAL_OWNER', 'Total_PnL', 'Avg_PnL_%', 
-                          'Portfolio_Value', 'Win_Trades', 'Total_Sell_Trades',
-                          'Stocks_Held', 'Total_Buy_Volume']
+                           'Portfolio_Value', 'Win_Trades', 'Total_Sell_Trades',
+                           'Stocks_Held', 'Total_Buy_Volume']
     
     holder_perf['Win_Rate'] = (holder_perf['Win_Trades'] / 
                               holder_perf['Total_Sell_Trades'].replace(0, 1) * 100).round(1)
@@ -985,8 +985,8 @@ def render_smart_money_tab(ksei_df, price_df, filtered_stocks=None):
         stock_detail = perf_df.sort_values('Unrealized_PnL', ascending=False).head(50)
         st.dataframe(
             stock_detail[['REAL_OWNER', 'Kode Efek', 'Avg_Buy_Price', 
-                         'Current_Price', 'Current_Holding', 'Current_Value',
-                         'Unrealized_PnL', 'Unrealized_PnL_%']].style.format({
+                          'Current_Price', 'Current_Holding', 'Current_Value',
+                          'Unrealized_PnL', 'Unrealized_PnL_%']].style.format({
                 'Avg_Buy_Price': 'Rp {:,.0f}',
                 'Current_Price': 'Rp {:,.0f}',
                 'Current_Holding': '{:,.0f}',
@@ -1193,8 +1193,7 @@ def main():
         price_status = f"Harga: {len(st.session_state['df_price']):,}" if 'df_price' in st.session_state else "Harga: -"
         
         st.caption(f"""
-        🦅 **Bandarmologi X-Ray Engine v5.0**  
-        {ksei_status} | {price_status}  
+        🦅 **Bandarmologi X-Ray Engine v5.0** {ksei_status} | {price_status}  
         Forensic Analysis | Ultimate Holder Consolidation | Smart Money Leaderboard  
         Data Source: KSEI · Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
         *See through the nominees, find the real owners, track their performance*
