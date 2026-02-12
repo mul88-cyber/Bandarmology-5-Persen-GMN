@@ -2,10 +2,11 @@
 ================================================================================
 🦅 BANDARMOLOGI ULTIMATE - X-RAY EDITION
 ================================================================================
-Fitur:
-1. Deep Unmasking (Mendeteksi Real Owner dibalik Nominee)
-2. Pledge/Repo Hunter (Mendeteksi saham yang digadaikan)
-3. Smart Grouping (Menggabungkan kepemilikan yang terpecah di banyak sekuritas)
+Engine: v3.0 (Forensic Regex + Logic Priority Fix)
+Features:
+- Deep Unmasking (Detects Real Owner behind Nominees)
+- Pledge/Repo Hunter (Detects collateral accounts)
+- Smart Grouping (Consolidates ownership)
 ================================================================================
 """
 
@@ -20,12 +21,11 @@ import warnings
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-from thefuzz import fuzz # Library untuk pencocokan teks mirip
 
 warnings.filterwarnings('ignore')
 
 # ==============================================================================
-# 1. KONFIGURASI HALAMAN & CSS
+# 1. KONFIGURASI HALAMAN
 # ==============================================================================
 st.set_page_config(
     layout="wide",
@@ -34,139 +34,144 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS biar tampilan sangar (Dark Mode Friendly)
+# Custom CSS for Professional Look
 st.markdown("""
 <style>
     .metric-card {background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #333;}
-    .stTabs [data-baseweb="tab-list"] {gap: 10px;}
-    .stTabs [data-baseweb="tab"] {height: 50px; white-space: pre-wrap; background-color: #0E1117; border-radius: 5px;}
-    .stTabs [aria-selected="true"] {background-color: #262730; color: #4CAF50;}
+    div[data-testid="stMetricValue"] {font-size: 1.4rem !important;}
+    .stTabs [data-baseweb="tab-list"] {gap: 8px;}
+    .stTabs [data-baseweb="tab"] {height: 40px; white-space: pre-wrap; background-color: #0E1117; border-radius: 5px;}
+    .stTabs [aria-selected="true"] {background-color: #262730; color: #00CC96; border-bottom: 2px solid #00CC96;}
 </style>
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# 2. INTELLIGENCE ENGINE (OTAK KLASIFIKASI)
+# 2. INTELLIGENCE ENGINE (OTAK FORENSIK)
 # ==============================================================================
 
-class XRayEngine:
-    """Mesin forensik untuk membedah data KSEI"""
+class BandarXRay:
+    """Mesin Forensik untuk Membedah Data KSEI"""
+
+    # --- A. DEFINISI POLA REGEX BANK (PRIORITAS TINGGI) ---
+    PATTERNS_NOMINEE = [
+        # 1. HSBC Variants
+        (r'(?:HSBC|HPTS|HSTSRBACT|HSSTRBACT|HASDBACR|HDSIVBICSI|HINSVBECS).*?(?:PRIVATE BANKING|FUND SVS|CLIENT|A/C)\s+(?:DIVISION-?)?\s*(?:PT\.?)?\s*(.+)', 'HSBC'),
+        
+        # 2. UBS Variants
+        (r'(?:UBS AG|USBTRS|U20B9S1|U20B2S3|UINBVSE|DINBVSE|UINBVS).*?(?:S/A|A/C|BRANCH|TR AC CL|SEPNOTRSE)\s*(?:PT\.?)?\s*(.+)', 'UBS AG'),
+        
+        # 3. Deutsche Bank Variants
+        (r'(?:DB AG|DEUTSCHE BANK|D21B4|D20B4|D22B5S9).*?(?:A/C|S/A|CLT)\s*(?:PT\.?)?\s*(.+)', 'Deutsche Bank'),
+        
+        # 4. Citibank Variants
+        (r'(?:CITIBANK|CITI).*?(?:S/A|CBHK|PBGSG)\s*(?:PT\.?)?\s*(.+)', 'Citibank'),
+        
+        # 5. Standard Chartered Variants
+        (r'(?:STANDARD CHARTERED|SCB).*?(?:S/A|A/C|CUSTODY)\s*(?:PT\.?)?\s*(.+)', 'Standard Chartered'),
+        
+        # 6. Bank of Singapore / JPMorgan
+        (r'(?:BOS LTD|BANK OF SINGAPORE|BINOVSE).*?(?:S/A|A/C)\s*(?:PT\.?)?\s*(.+)', 'Bank of Singapore'),
+        (r'(?:JPMCB|JPMORGAN|JINPVMECSBT).*?(?:RE-|NA RE-)\s*(?:PT\.?)?\s*(.+)', 'JPMorgan'),
+        
+        # 7. General Pattern (S/A, QQ, OBO) - Catch All
+        (r'.*?(?:S/A|QQ|OBO|BENEFICIARY)\s+(?:PT\.?)?\s*(.+)', 'Nominee General'),
+        (r'.*?(?:A/C CLIENT|CLIENT A/C|CLIENT)\s+(?:PT\.?)?\s*(.+)', 'Nominee General')
+    ]
+
+    # --- B. KEYWORDS ---
+    PLEDGE_KEYWORDS = ['PLEDGE', 'REPO', 'JAMINAN', 'AGUNAN', 'COLLATERAL', 'LOCKED', 'LENDING', 'MARGIN']
     
-    # Keyword untuk mendeteksi akun gadai/repo
-    PLEDGE_KEYWORDS = ['PLEDGE', 'REPO', 'JAMINAN', 'AGUNAN', 'COLLATERAL', 'LOCKED', 'LENDING']
-    
-    # Keyword untuk mendeteksi Institusi Keuangan (Nominee)
-    NOMINEE_KEYWORDS = [
-        'CITIBANK', 'DEUTSCHE BANK', 'STANDARD CHARTERED', 'HSBC', 'DBS BANK', 
-        'BUT.', 'BANK OF SINGAPORE', 'UBS AG', 'MORGAN STANLEY', 'NOMURA', 
-        'JULIUS BAER', 'RAIFFEISEN', 'BNP PARIBAS', 'CGS-CIMB', 'UOB KAY HIAN',
-        'MAYBANK', 'CLSA', 'CREDIT SUISSE', 'STATE STREET', 'JPMCB', 'JPMORGAN', 'SUMITOMO'
+    DIRECT_INDICATORS = [
+        ' PT', 'PT ', 'PT.', ' TBK', 'TBK ', 'LTD', 'INC', 'CORP', 'CO.', 'COMPANY',
+        'DRS.', 'DR.', 'IR.', 'H.', 'HJ.', 'YAYASAN', 'DANA PENSIUN'
     ]
 
     @staticmethod
     def clean_name(text):
-        """Membersihkan nama PT, TBK, dll untuk perbandingan nama"""
-        if pd.isna(text): return ""
-        text = str(text).upper()
-        remove_list = [
-            r'\bPT\.?\b', r'\bTBK\.?\b', r'\bLTD\.?\b', r'\bINC\.?\b', 
-            r'\bDRS\.?\b', r'\bIR\.?\b', r'\bSH\.?\b', r'\bMBA\b'
-        ]
-        for pattern in remove_list:
-            text = re.sub(pattern, '', text)
-        return " ".join(text.split())
+        """Membersihkan sampah referensi angka/kode di belakang nama"""
+        if pd.isna(text): return "-"
+        text = str(text).strip()
+        
+        # Buang referensi angka di belakang (e.g., "- 2091145195" atau "(ID1234)")
+        text = re.sub(r'\s*[-–—]\s*\d+.*$', '', text) 
+        text = re.sub(r'\s*\([A-Z0-9\s]+\)$', '', text)
+        
+        # Buang gelar umum untuk standarisasi (Optional, hati-hati over-clean)
+        # text = re.sub(r'\b(PT|TBK|LTD)\b', '', text, flags=re.IGNORECASE)
+        
+        return text.strip().upper()
 
     @staticmethod
-    def classify_row(row):
+    def classify_account(row):
         """
-        Logika Utama Klasifikasi per Baris Data
-        Output: (REAL_OWNER, HOLDING_TYPE, STATUS)
+        Logika Utama: Menerima baris data, mengembalikan (REAL_OWNER, TYPE, STATUS)
         """
         holder = str(row['Nama Pemegang Saham']).upper()
-        # Handle jika Nama Rekening Efek kosong (format lama)
+        # Handle account kosong
         account = str(row['Nama Rekening Efek']).upper() if pd.notna(row.get('Nama Rekening Efek')) else ""
         
-        # --- LEVEL 1: DETEKSI PLEDGE/REPO ---
-        is_pledge = False
         status = "NORMAL"
-        
-        # Cek apakah ada kata kunci gadai di nama rekening ATAU nama pemegang
-        if any(k in account for k in XRayEngine.PLEDGE_KEYWORDS) or any(k in holder for k in XRayEngine.PLEDGE_KEYWORDS):
-            is_pledge = True
-            status = "⚠️ PLEDGE / REPO"
-        elif 'MARGIN' in account:
-            status = "MARGIN"
-
-        # --- LEVEL 2: EKSTRAKSI REAL OWNER (UNMASKING) ---
-        
         real_owner = holder # Default: Pemilik adalah nama pemegang
-        holding_type = "DIRECT" # Default: Kepemilikan langsung
+        holding_type = "DIRECT"
         
-        # Cek apakah Holder adalah Bank/Nominee?
-        is_nominee_holder = any(k in holder for k in XRayEngine.NOMINEE_KEYWORDS)
+        # ---------------------------------------------------------
+        # 1. DETEKSI STATUS (PLEDGE/REPO) - Check First!
+        # ---------------------------------------------------------
+        if any(k in account for k in BandarXRay.PLEDGE_KEYWORDS):
+            status = "⚠️ PLEDGE / REPO"
+            # Jika pledge, biasanya nama asli ada di belakang kata kunci OBO/QQ
+            # Tapi kita biarkan logic unmasking di bawah yang menangani ekstraksi namanya
         
-        # Regex Patterns untuk menambang nama asli dari string rekening yang ruwet
-        # Contoh: "CITIBANK NA S/A PT ADARO..." -> ambil "PT ADARO"
-        # Urutan pattern penting (dari yang paling spesifik)
-        extraction_patterns = [
-            r'OBO\s+([A-Z0-9\.\s]+)',           # ... OBO PT MAJU ...
-            r'QQ\s+([A-Z0-9\.\s]+)',            # ... QQ BAPAK BUDI ...
-            r'S/A\s+([A-Z0-9\.\s]+)',           # ... S/A GLOBAL FUND ...
-            r'A/C\s+([A-Z0-9\.\s]+)',           # ... A/C CLIENT 123 ...
-            r'RE[:\-]\s*([A-Z0-9\.\s]+)',       # ... RE-PT ANGIN RIBUT ...
-            r'BENEFICIARY\s+([A-Z0-9\.\s]+)',   # ... BENEFICIARY MR X ...
-            r'CLIENT\s+([A-Z0-9\.\s]+)'         # ... CLIENT PT ABC ...
-        ]
+        # ---------------------------------------------------------
+        # 2. LOGIKA UNMASKING (URUTAN KRUSIAL!)
+        # ---------------------------------------------------------
         
-        extracted_name = None
+        # STEP A: Cek Pola Bank/Nominee Spesifik (Regex)
+        # Ini harus duluan sebelum cek "Direct". 
+        # Contoh: "CITIBANK S/A PT ADARO". Ada "PT", tapi ini NOMINEE.
         
-        # Coba ekstrak nama dari rekening jika ada
-        if account:
-            for pattern in extraction_patterns:
+        found_nominee = False
+        if account and len(account) > 3:
+            for pattern, source_type in BandarXRay.PATTERNS_NOMINEE:
                 match = re.search(pattern, account)
                 if match:
-                    # Ambil hasil capture group 1, lalu bersihkan sampah di belakangnya
-                    candidate = match.group(1).split('-')[0].strip() # Buang strip pemisah
-                    candidate = candidate.split('(')[0].strip()      # Buang kurung
-                    if len(candidate) > 3: # Validasi minimal panjang nama
-                        extracted_name = candidate
-                        break
+                    extracted = match.group(1)
+                    real_owner = BandarXRay.clean_name(extracted)
+                    holding_type = f"NOMINEE ({source_type})"
+                    found_nominee = True
+                    break
         
-        # --- LEVEL 3: PENENTUAN FINAL ---
-        
-        if is_pledge and extracted_name:
-            # Kasus: UOB (PLEDGE) OBO PT ASERRA -> Real Owner: ASERRA
-            real_owner = extracted_name
-            holding_type = "INDIRECT (REPO)"
+        # STEP B: Jika Tidak Ketemu Pola Nominee, Baru Cek Direct
+        if not found_nominee:
+            # Jika nama rekening mirip dengan nama pemegang -> Direct
+            # Atau jika nama rekening mengandung indikator perusahaan/perorangan tanpa keyword bank
+            is_direct_indicator = any(k in account for k in BandarXRay.DIRECT_INDICATORS)
             
-        elif extracted_name:
-            # Bandingkan nama Holder vs Extracted
-            similarity = fuzz.token_sort_ratio(XRayEngine.clean_name(holder), XRayEngine.clean_name(extracted_name))
-            
-            if similarity > 70:
-                # Kasus: ADARO vs CITIBANK S/A PT ADARO (Mirip) -> Self Custody
-                real_owner = extracted_name # Pakai nama yang di rekening biasanya lebih lengkap
-                holding_type = "CUSTODY (SELF)"
+            # Simple similarity check
+            if holder in account or account in holder:
+                holding_type = "DIRECT"
+                real_owner = BandarXRay.clean_name(holder)
+            elif is_direct_indicator:
+                # Kemungkinan nama variasi
+                holding_type = "DIRECT (VARIANT)"
+                real_owner = BandarXRay.clean_name(account)
             else:
-                # Kasus: BANK JULIUS BAER S/A HANNAWELL (Beda Jauh) -> Nominee
-                real_owner = extracted_name
-                holding_type = "NOMINEE / FUND"
-        
-        elif is_nominee_holder:
-            # Holder bank, tapi tidak ada info S/A di rekening -> Asumsikan Omnibus/Unknown
-            holding_type = "OMNIBUS / BANK"
-            
-        else:
-            # Tidak ada tanda-tanda nominee
-            holding_type = "DIRECT"
+                holding_type = "DIRECT / UNKNOWN"
+                real_owner = BandarXRay.clean_name(holder)
 
-        # Pembersihan Akhir Nama Real Owner
-        # Buang kata-kata sisa seperti "LIMITED", "PTE LTD" biar grouping enak (Opsional, di sini kita biarkan biar akurat)
-        
+        # ---------------------------------------------------------
+        # 3. KOREKSI KHUSUS (OVERRIDE)
+        # ---------------------------------------------------------
+        # Jika status Pledge, tandai tipe holdingnya
+        if status != "NORMAL":
+            holding_type = "INDIRECT (COLLATERAL)"
+            
         return pd.Series([real_owner, holding_type, status])
 
 # ==============================================================================
-# 3. DATA LOADER (GOOGLE DRIVE)
+# 3. DATA LOADER & PROCESSING
 # ==============================================================================
+
 @st.cache_resource
 def get_gdrive_service():
     try:
@@ -178,21 +183,18 @@ def get_gdrive_service():
             return build('drive', 'v3', credentials=creds)
         return None
     except Exception as e:
-        st.error(f"Error Auth Google: {e}")
+        st.error(f"Auth Error: {e}")
         return None
 
 @st.cache_data(ttl=3600)
-def load_and_process_data():
-    """Load CSV, Clean, and Apply X-Ray Engine"""
+def load_data():
+    service = get_gdrive_service()
+    if not service: return pd.DataFrame()
+    
     try:
-        # 1. Load Data
-        service = get_gdrive_service()
-        if not service: return pd.DataFrame()
-        
         FOLDER_ID = st.secrets["gdrive"]["folder_id"]
         FILENAME = "MASTER_DATABASE_5persen.csv"
         
-        # Search & Download
         results = service.files().list(q=f"name = '{FILENAME}' and '{FOLDER_ID}' in parents and trashed = false", fields="files(id)").execute()
         items = results.get('files', [])
         if not items: return pd.DataFrame()
@@ -204,68 +206,75 @@ def load_and_process_data():
         while done is False: status, done = downloader.next_chunk()
         file_stream.seek(0)
         
-        # 2. Read CSV
         df = pd.read_csv(file_stream, dtype={'Kode Efek': str})
         df['Tanggal_Data'] = pd.to_datetime(df['Tanggal_Data'])
         
-        # 3. Basic Cleaning
-        if 'Nama Rekening Efek' not in df.columns:
-            df['Nama Rekening Efek'] = '-' # Handle format lama
-        df['Nama Rekening Efek'] = df['Nama Rekening Efek'].fillna('-')
-        
+        # Cleaning Angka
         for col in ['Jumlah Saham (Prev)', 'Jumlah Saham (Curr)']:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
             
         df['Net_Flow'] = df['Jumlah Saham (Curr)'] - df['Jumlah Saham (Prev)']
-
-        # 4. APPLY X-RAY ENGINE (The Heavy Lifting)
-        # Kita pakai apply per baris. Agak berat tapi worth it untuk akurasi.
-        # Untuk performa, kita hanya apply ke pasangan (Holder, Account) yang unik, lalu di-merge.
         
-        unique_pairs = df[['Nama Pemegang Saham', 'Nama Rekening Efek']].drop_duplicates()
+        # Handle kolom Nama Rekening Efek (Format lama mungkin tidak ada)
+        if 'Nama Rekening Efek' not in df.columns:
+            df['Nama Rekening Efek'] = '-'
+        df['Nama Rekening Efek'] = df['Nama Rekening Efek'].fillna('-')
         
-        # Jalankan forensik pada data unik
-        print("🔍 Menjalankan Analisa Forensik pada Pasangan Unik...")
-        unique_pairs[['REAL_OWNER', 'HOLDING_TYPE', 'ACCOUNT_STATUS']] = unique_pairs.apply(XRayEngine.classify_row, axis=1)
-        
-        # Gabungkan kembali ke data utama (VLOOKUP style)
-        df_enriched = pd.merge(df, unique_pairs, on=['Nama Pemegang Saham', 'Nama Rekening Efek'], how='left')
-        
-        return df_enriched
-
+        return df
     except Exception as e:
-        st.error(f"System Error: {e}")
+        st.error(f"Load Error: {e}")
         return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def process_data_forensics(df):
+    """Menjalankan Logic BandarXRay pada data"""
+    if df.empty: return df
+    
+    # Optimasi: Apply hanya pada kombinasi unik (Holder + Account)
+    # Ini mempercepat proses 100x lipat dibanding apply per baris di jutaan data
+    unique_pairs = df[['Nama Pemegang Saham', 'Nama Rekening Efek']].drop_duplicates()
+    
+    # Jalankan Klasifikasi
+    unique_pairs[['REAL_OWNER', 'HOLDING_TYPE', 'ACCOUNT_STATUS']] = unique_pairs.apply(BandarXRay.classify_account, axis=1)
+    
+    # Merge kembali ke data utama
+    df_merged = pd.merge(df, unique_pairs, on=['Nama Pemegang Saham', 'Nama Rekening Efek'], how='left')
+    
+    return df_merged
 
 # ==============================================================================
 # 4. DASHBOARD UI
 # ==============================================================================
 
-# --- LOAD DATA ---
-with st.spinner('🚀 Menghubungkan ke Satelit KSEI & Menjalankan Analisa Forensik...'):
-    df = load_and_process_data()
+# --- LOAD & PROCESS ---
+with st.spinner('Menghubungkan ke Database KSEI...'):
+    df_raw = load_data()
 
-if df.empty:
-    st.error("Gagal memuat data. Cek koneksi atau file di Drive.")
+if df_raw.empty:
+    st.warning("Data tidak ditemukan atau GDrive belum dikonfigurasi.")
     st.stop()
+
+with st.spinner('Menjalankan Analisa Forensik (Unmasking Nominees)...'):
+    df = process_data_forensics(df_raw)
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🦅 X-RAY FILTER")
+    st.title("🦅 X-RAY CONTROL")
     
-    # 1. Filter Saham
+    # Filter Saham
     all_stocks = sorted(df['Kode Efek'].unique())
     sel_stock = st.multiselect("Kode Saham", all_stocks, default=all_stocks[:1] if all_stocks else None)
     
-    # 2. Filter Tanggal
+    # Filter Tanggal
     min_d, max_d = df['Tanggal_Data'].min().date(), df['Tanggal_Data'].max().date()
     sel_date = st.date_input("Periode", [min_d, max_d])
     
-    # 3. Filter Intelligence
     st.divider()
-    st.subheader("🕵️ Forensik Filter")
-    show_pledge_only = st.checkbox("Hanya Tampilkan REPO/GADAI ⚠️")
-    show_new_entry = st.checkbox("Hanya Pemain BARU (New Entry)")
+    
+    # Filter Khusus
+    st.subheader("Filter Lanjutan")
+    show_pledge = st.checkbox("Tampilkan HANYA REPO/GADAI ⚠️")
+    show_top_only = st.checkbox("Hanya Top 20 Holder")
 
 # --- FILTERING DATA ---
 df_view = df.copy()
@@ -279,150 +288,150 @@ if len(sel_date) == 2:
         (df_view['Tanggal_Data'].dt.date <= sel_date[1])
     ]
 
-if show_pledge_only:
+if show_pledge:
     df_view = df_view[df_view['ACCOUNT_STATUS'].str.contains("PLEDGE|REPO")]
 
-if show_new_entry:
-    df_view = df_view[(df_view['Jumlah Saham (Prev)'] == 0) & (df_view['Jumlah Saham (Curr)'] > 0)]
-
 # ==============================================================================
-# 5. DASHBOARD TABS
+# 5. TABS VISUALIZATION
 # ==============================================================================
 
-st.title(f"Bandarmologi X-Ray: {', '.join(sel_stock) if sel_stock else 'ALL MARKET'}")
-
-tab1, tab2, tab3 = st.tabs(["👑 ULTIMATE HOLDERS", "⚠️ REPO MONITOR", "🧬 DEEP FLOW ANALYSIS"])
-
-# --- TAB 1: ULTIMATE HOLDERS (The Real Boss) ---
-with tab1:
-    st.markdown("### Siapa Pemegang Asli di Balik Layar?")
-    st.caption("Data ini sudah dibersihkan dari akun Nominee/Bank Kustodian. Kepemilikan digabungkan berdasarkan Real Owner.")
+if not df_view.empty:
+    st.title(f"Bandarmologi X-Ray: {', '.join(sel_stock) if sel_stock else 'ALL MARKET'}")
     
-    # Ambil data tanggal terakhir
+    # Hitung data tanggal terakhir untuk snapshot
     last_date = df_view['Tanggal_Data'].max()
     df_last = df_view[df_view['Tanggal_Data'] == last_date]
-    
-    if not df_last.empty:
-        # Group by REAL_OWNER (Bukan Nama Pemegang lagi)
-        uh_stats = df_last.groupby('REAL_OWNER').agg({
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "👑 ULTIMATE HOLDER", 
+        "⚠️ REPO MONITOR", 
+        "🌊 FLOW ANALYSIS",
+        "🕵️ NOMINEE MAPPING"
+    ])
+
+    # --- TAB 1: ULTIMATE HOLDER (THE GODZILLA VIEW) ---
+    with tab1:
+        st.markdown(f"### Peta Kepemilikan Asli (Per {last_date.date()})")
+        st.caption("Data ini menggabungkan kepemilikan satu orang yang tersebar di banyak akun (Direct + Nominee).")
+        
+        # Group by REAL_OWNER
+        uh_group = df_last.groupby('REAL_OWNER').agg({
             'Jumlah Saham (Curr)': 'sum',
-            'Nama Pemegang Saham': 'nunique', # Berapa akun nominee dia pakai
-            'Kode Efek': 'nunique',
+            'Nama Pemegang Saham': 'nunique', # Jumlah Akun
+            'HOLDING_TYPE': lambda x: ', '.join(x.unique())[:50] + '...' if len(str(x.unique())) > 50 else ', '.join(x.unique()),
             'ACCOUNT_STATUS': lambda x: '⚠️ ADA REPO' if any('PLEDGE' in s for s in x) else 'Clean'
-        }).sort_values('Jumlah Saham (Curr)', ascending=False).reset_index()
+        }).sort_values('Jumlah Saham (Curr)', ascending=False)
         
-        col_l, col_r = st.columns([2, 1])
+        if show_top_only:
+            uh_group = uh_group.head(20)
+            
+        c1, c2 = st.columns([2, 1])
         
-        with col_l:
+        with c1:
             st.dataframe(
-                uh_stats.style.format({'Jumlah Saham (Curr)': '{:,.0f}'}),
+                uh_group.style.format({'Jumlah Saham (Curr)': '{:,.0f}'}),
                 use_container_width=True,
                 height=600,
                 column_config={
-                    "REAL_OWNER": "Beneficial Owner (Asli)",
-                    "Nama Pemegang Saham": "Jml Akun Nominee",
+                    "REAL_OWNER": "Beneficial Owner (Pemilik Asli)",
+                    "Nama Pemegang Saham": "Jml Akun",
+                    "HOLDING_TYPE": "Tipe Penyimpanan",
                     "ACCOUNT_STATUS": "Status Risiko"
                 }
             )
-            
-        with col_r:
-            # Breakdown Pie Chart untuk Top 1 Holder
-            if not uh_stats.empty:
-                top_boss = uh_stats.iloc[0]['REAL_OWNER']
-                st.subheader(f"Portofolio: {top_boss}")
-                
-                df_boss = df_last[df_last['REAL_OWNER'] == top_boss]
-                fig = px.pie(df_boss, values='Jumlah Saham (Curr)', names='HOLDING_TYPE', title=f"Gaya Simpan {top_boss}", hole=0.4)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                st.write("**Akun-akun yang digunakan:**")
-                st.dataframe(df_boss[['Nama Pemegang Saham', 'Nama Rekening Efek']].drop_duplicates(), hide_index=True)
-
-    else:
-        st.info("Tidak ada data di tanggal terakhir.")
-
-# --- TAB 2: REPO MONITOR (The Risk) ---
-with tab2:
-    st.markdown("### ⚠️ Radar Saham Digadaikan (Forced Sell Risk)")
-    
-    # Filter Global Dataset untuk Pledge
-    df_pledge = df_view[df_view['ACCOUNT_STATUS'].str.contains("PLEDGE|REPO")]
-    
-    if not df_pledge.empty:
-        # Agregasi per Saham
-        repo_summary = df_pledge.groupby(['Kode Efek', 'REAL_OWNER']).agg({
-            'Jumlah Saham (Curr)': 'sum',
-            'Nama Rekening Efek': 'count'
-        }).reset_index().sort_values('Jumlah Saham (Curr)', ascending=False)
         
-        # Metric
-        total_repo_vol = df_pledge['Jumlah Saham (Curr)'].sum()
-        c1, c2 = st.columns(2)
-        c1.metric("Total Volume Saham Tergadai", f"{total_repo_vol:,.0f}")
-        c2.metric("Jumlah Pihak Terlibat", f"{df_pledge['REAL_OWNER'].nunique()}")
-        
-        # Chart
-        st.subheader("Peta Persebaran Barang Repo")
-        fig_repo = px.treemap(df_pledge, path=['Kode Efek', 'REAL_OWNER', 'Nama Pemegang Saham'], values='Jumlah Saham (Curr)',
-                             color='Kode Efek', title="Siapa yang Menggadaikan Saham Apa?")
-        st.plotly_chart(fig_repo, use_container_width=True)
-        
-        # Detail Table
-        st.subheader("Rincian Transaksi Repo")
-        st.dataframe(
-            df_pledge[['Tanggal_Data', 'Kode Efek', 'REAL_OWNER', 'Nama Pemegang Saham', 'Nama Rekening Efek', 'Jumlah Saham (Curr)']]
-            .sort_values('Tanggal_Data', ascending=False)
-            .style.format({'Jumlah Saham (Curr)': '{:,.0f}'}),
-            use_container_width=True
-        )
-    else:
-        st.success("✅ AMAN! Tidak ditemukan indikasi Repo/Gadai pada filter saat ini.")
-
-# --- TAB 3: DEEP FLOW (Smart Money) ---
-with tab3:
-    st.markdown("### 🧬 Analisa Aliran Barang (Accumulation vs Distribution)")
-    
-    # Grouping berdasarkan REAL OWNER untuk melihat Net Flow
-    # Kita ingin lihat: Hari ini SIAPA yang nampung barang?
-    
-    if not df_view.empty:
-        # Agregasi Flow per Real Owner dalam periode terpilih
-        flow_stats = df_view.groupby('REAL_OWNER')['Net_Flow'].sum().reset_index()
-        flow_stats = flow_stats.sort_values('Net_Flow', ascending=False)
-        
-        # Top Accumulators (Green)
-        top_buy = flow_stats.head(10)
-        # Top Distributors (Red)
-        top_sell = flow_stats.tail(10).sort_values('Net_Flow', ascending=True) # Biar urut dari minus terbesar
-        
-        c1, c2 = st.columns(2)
-        
-        with c1:
-            st.subheader("🟢 Top Accumulators (Big Buyer)")
-            fig_buy = px.bar(top_buy, x='Net_Flow', y='REAL_OWNER', orientation='h', color_discrete_sequence=['#00CC96'], text_auto='.2s')
-            fig_buy.update_layout(yaxis={'categoryorder':'total ascending'})
-            st.plotly_chart(fig_buy, use_container_width=True)
-            
         with c2:
-            st.subheader("🔴 Top Distributors (Big Seller)")
-            # Balik biar grafiknya enak
-            fig_sell = px.bar(top_sell, x='Net_Flow', y='REAL_OWNER', orientation='h', color_discrete_sequence=['#EF553B'], text_auto='.2s')
-            fig_sell.update_layout(yaxis={'categoryorder':'total descending'})
-            st.plotly_chart(fig_sell, use_container_width=True)
+            # Pie Chart Komposisi Top 5
+            top5 = uh_group.head(5).reset_index()
+            fig_pie = px.pie(top5, values='Jumlah Saham (Curr)', names='REAL_OWNER', title="Top 5 Penguasa Saham", hole=0.4)
+            st.plotly_chart(fig_pie, use_container_width=True)
             
-        # Chart History Pemain Tertentu
+            # Metric Total
+            total_share = df_last['Jumlah Saham (Curr)'].sum()
+            st.metric("Total Lembar Saham (>5%)", f"{total_share:,.0f}")
+
+    # --- TAB 2: REPO MONITOR (RISK VIEW) ---
+    with tab2:
+        st.markdown("### ⚠️ Radar Saham Digadaikan (Forced Sell Risk)")
+        st.caption("Mendeteksi akun dengan kata kunci: PLEDGE, REPO, COLLATERAL, JAMINAN, MARGIN.")
+        
+        # Ambil semua data pledge di periode ini (bukan cuma last date, biar kelihatan history)
+        df_repo = df_view[df_view['ACCOUNT_STATUS'].str.contains("PLEDGE|REPO")]
+        
+        if not df_repo.empty:
+            repo_last = df_repo[df_repo['Tanggal_Data'] == last_date]
+            
+            col_a, col_b = st.columns(2)
+            col_a.metric("Total Saham Tergadai (Saat Ini)", f"{repo_last['Jumlah Saham (Curr)'].sum():,.0f}")
+            col_b.metric("Jumlah Pihak Terlibat Repo", f"{repo_last['REAL_OWNER'].nunique()}")
+            
+            st.subheader("Daftar Akun Terindikasi Repo")
+            st.dataframe(
+                repo_last[['REAL_OWNER', 'Nama Pemegang Saham', 'Nama Rekening Efek', 'Jumlah Saham (Curr)']]
+                .sort_values('Jumlah Saham (Curr)', ascending=False)
+                .style.format({'Jumlah Saham (Curr)': '{:,.0f}'}),
+                use_container_width=True
+            )
+            
+            st.subheader("Historical Repo Trend")
+            repo_trend = df_repo.groupby('Tanggal_Data')['Jumlah Saham (Curr)'].sum().reset_index()
+            fig_repo = px.area(repo_trend, x='Tanggal_Data', y='Jumlah Saham (Curr)', title="Tren Volume Saham Digadaikan", color_discrete_sequence=['#FF4B4B'])
+            st.plotly_chart(fig_repo, use_container_width=True)
+            
+        else:
+            st.success("✅ AMAN! Tidak ditemukan indikasi Repo/Gadai pada data yang difilter.")
+
+    # --- TAB 3: FLOW ANALYSIS (SMART MONEY) ---
+    with tab3:
+        st.markdown("### 🌊 Analisa Aliran Barang (Accumulation vs Distribution)")
+        
+        # Hitung Net Flow per REAL OWNER selama periode
+        flow_stats = df_view.groupby('REAL_OWNER')['Net_Flow'].sum().reset_index()
+        flow_stats = flow_stats[flow_stats['Net_Flow'] != 0].sort_values('Net_Flow', ascending=False)
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("🟢 Top Accumulator (Buying)")
+            st.dataframe(flow_stats.head(10).style.format({'Net_Flow': '{:,.0f}'}), use_container_width=True, hide_index=True)
+        with c2:
+            st.subheader("🔴 Top Distributor (Selling)")
+            st.dataframe(flow_stats.tail(10).sort_values('Net_Flow', ascending=True).style.format({'Net_Flow': '{:,.0f}'}), use_container_width=True, hide_index=True)
+            
         st.divider()
-        st.subheader("📈 Lacak Jejak Pemain")
-        
-        # Pilih pemain dari list yang ada di view sekarang
+        st.subheader("📈 Lacak Pergerakan Pemain")
         players = sorted(df_view['REAL_OWNER'].unique())
-        target_player = st.selectbox("Pilih Real Owner:", players)
+        target = st.selectbox("Pilih Real Owner:", players)
         
-        if target_player:
-            df_track = df_view[df_view['REAL_OWNER'] == target_player]
-            fig_track = px.line(df_track, x='Tanggal_Data', y='Jumlah Saham (Curr)', color='Kode Efek', markers=True, title=f"Pergerakan Barang: {target_player}")
+        if target:
+            track_df = df_view[df_view['REAL_OWNER'] == target]
+            fig_track = px.line(track_df, x='Tanggal_Data', y='Jumlah Saham (Curr)', color='Kode Efek', markers=True, title=f"Trend Kepemilikan: {target}")
             st.plotly_chart(fig_track, use_container_width=True)
+
+    # --- TAB 4: NOMINEE MAPPING (X-RAY) ---
+    with tab4:
+        st.markdown("### 🕵️ Bedah Nominee")
+        st.caption("Melihat detail: Siapa memakai Bank apa?")
+        
+        # Filter hanya yang Nominee
+        df_nom = df_last[df_last['HOLDING_TYPE'].str.contains("NOMINEE")]
+        
+        if not df_nom.empty:
+            mapping = df_nom.groupby(['REAL_OWNER', 'Nama Pemegang Saham']).agg({
+                'Nama Rekening Efek': 'first',
+                'Jumlah Saham (Curr)': 'sum'
+            }).reset_index().sort_values('REAL_OWNER')
+            
+            st.dataframe(mapping, use_container_width=True, column_config={
+                "Nama Pemegang Saham": "Bank/Kustodian",
+                "Nama Rekening Efek": "Detail Rekening (Bukti)",
+                "REAL_OWNER": "Pemilik Asli"
+            })
+        else:
+            st.info("Tidak ada kepemilikan Nominee di saham ini.")
+
+else:
+    st.info("Mohon pilih saham di Sidebar.")
 
 # --- FOOTER ---
 st.divider()
-st.caption(f"Bandarmologi X-Ray Engine v3.0 | Processed {len(df):,} Rows | Forensics Active")
+st.caption(f"Bandarmologi X-Ray Engine v3.0 | Data Processed: {len(df):,} Rows")
