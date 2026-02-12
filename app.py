@@ -38,7 +38,7 @@ st.set_page_config(
 )
 
 # ==============================================================================
-# 2. CUSTOM CSS - PROFESSIONAL LOOK
+# 2. CUSTOM CSS - PROFESSIONAL LOOK (FIXED CONTRAST)
 # ==============================================================================
 st.markdown("""
 <style>
@@ -49,14 +49,15 @@ st.markdown("""
     div[data-testid="stMetricValue"] {
         font-size: 1.8rem !important;
         font-weight: 700;
+        color: #FFFFFF !important;  /* Putih terang */
     }
     div[data-testid="stMetricLabel"] {
         font-size: 0.9rem !important;
         font-weight: 500;
-        color: #9CA3AF;
+        color: #CCCCCC !important;  /* Abu-abu terang */
     }
     
-    /* Tabs styling */
+    /* Tabs styling - FIXED CONTRAST */
     .stTabs [data-baseweb="tab-list"] {
         gap: 2px;
         background-color: #0E1117;
@@ -67,12 +68,20 @@ st.markdown("""
         height: 40px;
         padding: 0px 16px;
         border-radius: 8px;
-        font-weight: 500;
+        font-weight: 600;
+        color: #FFFFFF !important;        /* Teks putih */
+        background-color: #1E1E1E;        /* Background gelap */
+        border: 1px solid #333333;        /* Border abu-abu */
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        background-color: #2D2D2D;        /* Hover lebih terang */
+        border-color: #00CC96;
     }
     .stTabs [aria-selected="true"] {
-        background-color: #262730;
-        color: #00CC96;
-        border-bottom: 2px solid #00CC96;
+        background-color: #00CC96 !important;  /* Hijau terang */
+        color: #000000 !important;             /* Teks hitam kontras */
+        border-bottom: 2px solid #00FF00;
+        font-weight: 700;
     }
     
     /* Dataframes */
@@ -84,7 +93,7 @@ st.markdown("""
     
     /* Headers */
     h1, h2, h3 {
-        color: #F0F2F6;
+        color: #FFFFFF !important;
         font-weight: 600;
     }
     
@@ -92,6 +101,18 @@ st.markdown("""
     hr {
         margin: 1.5rem 0;
         border-color: #2D2D2D;
+    }
+    
+    /* Sidebar text */
+    .css-1aumxhk, .css-1wrcr25 {
+        color: #FFFFFF !important;
+    }
+    
+    /* Warning/Info boxes */
+    .stAlert {
+        background-color: #1E1E1E;
+        border-left: 5px solid #00CC96;
+        color: #FFFFFF;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -182,14 +203,14 @@ class BandarXRay:
         
         text = str(text).strip()
         
-        # Buang reference numbers
+        # Buang reference numbers di AKHIR saja
         text = re.sub(r'\s*[-–—]\s*\d+[A-Z]*$', '', text)
         text = re.sub(r'\s*[-–—]\s*[A-Z]+\d+$', '', text)
         text = re.sub(r'\s*\([A-Z0-9\s\-]+\)$', '', text)
         text = re.sub(r'\s*\d{6,}$', '', text)
         
-        # Buang kode unik di depan
-        text = re.sub(r'^[A-Z0-9]{4,}\s+', '', text)
+        # ✅ HAPUS BARIS INI - JANGAN HAPUS KATA DI DEPAN!
+        # text = re.sub(r'^[A-Z0-9]{4,}\s+', '', text)
         
         # Normalize whitespace
         text = re.sub(r'\s+', ' ', text)
