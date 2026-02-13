@@ -564,161 +564,204 @@ with tab3:
         fig.update_xaxes(tickformat=",.0f")  # Format sumbu x dengan separator
         st.plotly_chart(fig, use_container_width=True)
         
-        # ============= DEEP DIVE LINE CHART - VERSI FIX =============
-st.subheader("📈 DEEP DIVE: Timeline Akumulasi per Entitas")
-st.caption("Pilih entitas untuk melihat pergerakan kepemilikan dari waktu ke waktu")
+# ============= DEEP DIVE LINE CHART - BY WEEKLY =============
+st.subheader("📈 DEEP DIVE: Timeline Akumulasi per Rekening Efek")
+st.caption("Pergerakan kepemilikan dan harga secara weekly")
 
 # Input untuk deep dive
-col_a, col_b = st.columns([2, 1])
+col_a, col_b, col_c = st.columns([2, 1, 1])
+
 with col_a:
-    # Pilihan entitas dari hasil akumulasi
-    entity_options = df_akumulasi['Nama Pemegang Saham'].unique()
-    selected_entity = st.selectbox(
-        "Pilih Nama Pemegang Saham",
-        entity_options,
-        index=0 if len(entity_options) > 0 else None
+    # Pilihan rekening efek dari hasil akumulasi
+    rekening_options = df_akumulasi['Nama Rekening'].unique()
+    selected_rekening = st.selectbox(
+        "Pilih Nama Pemegang Rekening Efek",
+        rekening_options,
+        index=0 if len(rekening_options) > 0 else None
     )
 
 with col_b:
-    # Pilihan saham spesifik dari entitas tersebut
-    if selected_entity:
-        stocks_of_entity = df_akumulasi[df_akumulasi['Nama Pemegang Saham'] == selected_entity]['Kode Efek'].unique()
+    # Pilihan saham spesifik dari rekening tersebut
+    if selected_rekening:
+        stocks_of_rekening = df_akumulasi[
+            df_akumulasi['Nama Rekening'] == selected_rekening
+        ]['Kode Efek'].unique()
         selected_stock = st.selectbox(
-            "Pilih Kode Efek",
-            stocks_of_entity,
-            index=0 if len(stocks_of_entity) > 0 else None
+            "Kode Efek",
+            stocks_of_rekening,
+            index=0 if len(stocks_of_rekening) > 0 else None
         )
 
-if selected_entity and selected_stock:
-    # Filter data untuk entitas dan saham terpilih
+with col_c:
+    # Pilih interval weekly
+    weekly_option = st.selectbox(
+        "Interval",
+        ["Weekly", "Bi-Weekly", "Monthly"],
+        index=0
+    )
+
+if selected_rekening and selected_stock:
+    # Filter data untuk rekening dan saham terpilih
     df_timeline = df_master_filtered[
-        (df_master_filtered['Nama Pemegang Saham'] == selected_entity) &
+        (df_master_filtered['Nama Rekening Efek'] == selected_rekening) &
         (df_master_filtered['Kode Efek'] == selected_stock)
     ].sort_values('Tanggal_Data').copy()
     
     if not df_timeline.empty:
-        # Buat figure dengan subplots untuk handle multiple axis
-        from plotly.subplots import make_subplots
+        # --- RESAMPLE KE WEEKLY ---
+        df_timeline.set_index('Tanggal_Data', inplace=True)
         
-        # Buat subplot dengan 2 baris (atas: kepemilikan & harga, bawah: transaksi)
-        fig_deep = make_subplots(
-            rows=2, cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.15,
-            subplot_titles=(f"{selected_entity} pada {selected_stock}", "Volume Transaksi"),
-            row_heights=[0.7, 0.3]
-        )
+        # Tentukan frekuensi resample
+        if weekly_option == "Weekly":
+            freq = 'W'  # Weekly
+        elif weekly_option == "Bi-Weekly":
+            freq = '2W'  # 2 minggu
+        else:
+            freq = 'ME'  # Month End
+            
+        # Resample: ambil data terakhir di setiap periode
+        df_weekly = df_timeline.resample(freq).last().dropna(subset=['Kode Efek']).reset_index()
         
-        # --- ROW 1: Kepemilikan & Harga ---
-        # Line chart: Kepemilikan
-        fig_deep.add_trace(
-            go.Scatter(
-                x=df_timeline['Tanggal_Data'],
-                y=df_timeline['Jumlah Saham (Curr)'],
-                mode='lines+markers',
-                name='Kepemilikan',
-                line=dict(color='#2E86AB', width=3),
-                marker=dict(size=8),
-                hovertemplate='Tanggal: %{x|%d-%m-%Y}<br>Kepemilikan: %{customdata}<extra></extra>',
-                customdata=df_timeline['Jumlah Saham (Curr)'].apply(lambda x: format_lembar(x))
-            ),
-            row=1, col=1
-        )
+        # Kembalikan index ke kolom biasa
+        df_timeline.reset_index(inplace=True)
         
-        # Line chart: Harga Close (secondary axis di row 1)
-        if 'Close_Price' in df_timeline.columns:
-            fig_deep.add_trace(
-                go.Scatter(
-                    x=df_timeline['Tanggal_Data'],
-                    y=df_timeline['Close_Price'],
-                    mode='lines+markers',
-                    name='Harga',
-                    line=dict(color='#E88873', width=2, dash='dot'),
-                    marker=dict(size=6),
-                    yaxis='y2',
-                    hovertemplate='Tanggal: %{x|%d-%m-%Y}<br>Harga: %{customdata}<extra></extra>',
-                    customdata=df_timeline['Close_Price'].apply(lambda x: format_rupiah(x))
-                ),
-                row=1, col=1
-            )
+        st.success(f"Menampilkan {len(df_weekly)} periode {weekly_option.lower()} dari {len(df_timeline)} transaksi harian")
         
-        # --- ROW 2: Volume Transaksi (Bar Chart) ---
-        colors = ['#2ECC71' if x > 0 else '#E74C3C' for x in df_timeline['Perubahan_Saham']]
-        fig_deep.add_trace(
-            go.Bar(
-                x=df_timeline['Tanggal_Data'],
-                y=df_timeline['Perubahan_Saham'],
-                name='Transaksi',
-                marker_color=colors,
-                opacity=0.7,
-                hovertemplate='Tanggal: %{x|%d-%m-%Y}<br>Transaksi: %{customdata}<extra></extra>',
-                customdata=df_timeline['Perubahan_Saham'].apply(
-                    lambda x: format_lembar(x) + (' (Beli)' if x > 0 else ' (Jual)')
-                )
-            ),
-            row=2, col=1
-        )
+        # ============= CHART 1: KEPEMILIKAN =============
+        st.subheader(f"📊 Kepemilikan: {selected_rekening}")
         
-        # Update layout
-        fig_deep.update_layout(
-            height=700,
+        fig_ownership = go.Figure()
+        
+        # Line chart kepemilikan (weekly)
+        fig_ownership.add_trace(go.Scatter(
+            x=df_weekly['Tanggal_Data'],
+            y=df_weekly['Jumlah Saham (Curr)'],
+            mode='lines+markers',
+            name='Jumlah Kepemilikan',
+            line=dict(color='#2E86AB', width=3),
+            marker=dict(size=10, symbol='circle'),
+            hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
+                         'Kepemilikan: %{customdata}<extra></extra>',
+            customdata=df_weekly['Jumlah Saham (Curr)'].apply(lambda x: format_lembar(x))
+        ))
+        
+        # Tambahkan anotasi beli/jual di weekly chart
+        beli_weekly = df_weekly[df_weekly['Perubahan_Saham'] > 0]
+        jual_weekly = df_weekly[df_weekly['Perubahan_Saham'] < 0]
+        
+        fig_ownership.add_trace(go.Scatter(
+            x=beli_weekly['Tanggal_Data'],
+            y=beli_weekly['Jumlah Saham (Curr)'],
+            mode='markers',
+            name='Ada Pembelian',
+            marker=dict(color='#2ECC71', size=14, symbol='triangle-up'),
+            hovertemplate='<b>%{x|%d-%m-%Y}</b><br>Beli: %{customdata}<extra></extra>',
+            customdata=beli_weekly['Perubahan_Saham'].apply(lambda x: format_lembar(x))
+        ))
+        
+        fig_ownership.add_trace(go.Scatter(
+            x=jual_weekly['Tanggal_Data'],
+            y=jual_weekly['Jumlah Saham (Curr)'],
+            mode='markers',
+            name='Ada Penjualan',
+            marker=dict(color='#E74C3C', size=14, symbol='triangle-down'),
+            hovertemplate='<b>%{x|%d-%m-%Y}</b><br>Jual: %{customdata}<extra></extra>',
+            customdata=jual_weekly['Perubahan_Saham'].apply(lambda x: format_lembar(abs(x)))
+        ))
+        
+        fig_ownership.update_layout(
+            title=f"Pergerakan Kepemilikan - {selected_stock}",
+            height=450,
             hovermode='x unified',
-            showlegend=True,
             legend=dict(
                 orientation="h",
                 yanchor="bottom",
                 y=1.02,
                 xanchor="center",
                 x=0.5
-            )
-        )
-        
-        # Update axes untuk row 1 (Kepemilikan)
-        fig_deep.update_yaxes(
-            title_text="Jumlah Kepemilikan (Lembar)",
-            title_font=dict(color='#2E86AB'),
-            tickfont=dict(color='#2E86AB'),
-            tickformat=",.0f",
-            row=1, col=1
-        )
-        
-        # Update axes untuk row 1 - Harga (secondary y)
-        if 'Close_Price' in df_timeline.columns:
-            fig_deep.update_yaxes(
-                title_text="Harga (Rp)",
-                title_font=dict(color='#E88873'),
-                tickfont=dict(color='#E88873'),
+            ),
+            yaxis=dict(
+                title="Jumlah Saham (Lembar)",
                 tickformat=",.0f",
-                overlaying='y',
-                side='right',
-                row=1, col=1
+                gridcolor='lightgray'
+            ),
+            xaxis=dict(
+                title="Tanggal (Weekly)",
+                tickformat="%d-%m-%Y"
             )
-        
-        # Update axes untuk row 2 (Volume Transaksi)
-        fig_deep.update_yaxes(
-            title_text="Volume Transaksi",
-            title_font=dict(color='#7F8C8D'),
-            tickfont=dict(color='#7F8C8D'),
-            tickformat=",.0f",
-            row=2, col=1
         )
         
-        # Update xaxes format tanggal
-        fig_deep.update_xaxes(
-            tickformat="%d-%m-%Y",
-            row=2, col=1
-        )
-        fig_deep.update_xaxes(
-            tickformat="%d-%m-%Y",
-            row=1, col=1
-        )
+        st.plotly_chart(fig_ownership, use_container_width=True)
         
-        st.plotly_chart(fig_deep, use_container_width=True)
+        # ============= CHART 2: HARGA CLOSE =============
+        st.subheader(f"📈 Pergerakan Harga - {selected_stock}")
         
-        # Tampilkan ringkasan (4 kolom metric)
-        col_metric1, col_metric2, col_metric3, col_metric4 = st.columns(4)
+        # Ambil data harga dari df_harian
+        df_harga = df_harian[
+            df_harian['Stock Code'] == selected_stock
+        ].sort_values('Last Trading Date').copy()
         
-        with col_metric1:
+        if not df_harga.empty:
+            # Resample harga ke weekly juga
+            df_harga.set_index('Last Trading Date', inplace=True)
+            df_harga_weekly = df_harga.resample(freq).last().dropna(subset=['Close']).reset_index()
+            df_harga.reset_index(inplace=True)
+            
+            fig_price = go.Figure()
+            
+            # Line chart harga
+            fig_price.add_trace(go.Scatter(
+                x=df_harga_weekly['Last Trading Date'],
+                y=df_harga_weekly['Close'],
+                mode='lines+markers',
+                name='Harga Close',
+                line=dict(color='#E88873', width=3),
+                marker=dict(size=8, color='#E88873'),
+                hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
+                             'Harga: %{customdata}<extra></extra>',
+                customdata=df_harga_weekly['Close'].apply(lambda x: format_rupiah(x))
+            ))
+            
+            # Tambahkan volume spike sebagai scatter
+            if 'Volume Spike (x)' in df_harga_weekly.columns:
+                spike = df_harga_weekly[df_harga_weekly['Volume Spike (x)'] > 1.5]
+                if not spike.empty:
+                    fig_price.add_trace(go.Scatter(
+                        x=spike['Last Trading Date'],
+                        y=spike['Close'],
+                        mode='markers',
+                        name='Volume Spike',
+                        marker=dict(color='#F39C12', size=12, symbol='star'),
+                        hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
+                                     'Volume Spike: %{customdata:.1f}x<extra></extra>',
+                        customdata=spike['Volume Spike (x)']
+                    ))
+            
+            fig_price.update_layout(
+                title=f"Pergerakan Harga - {selected_stock}",
+                height=400,
+                hovermode='x unified',
+                yaxis=dict(
+                    title="Harga (Rp)",
+                    tickformat=",.0f",
+                    gridcolor='lightgray'
+                ),
+                xaxis=dict(
+                    title="Tanggal (Weekly)",
+                    tickformat="%d-%m-%Y"
+                )
+            )
+            
+            st.plotly_chart(fig_price, use_container_width=True)
+        else:
+            st.warning(f"Data harga tidak ditemukan untuk {selected_stock}")
+        
+        # ============= METRIK RINGKASAN =============
+        st.subheader("📋 Ringkasan Aktivitas")
+        
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        
+        with col_m1:
             awal = df_timeline['Jumlah Saham (Curr)'].iloc[0]
             akhir = df_timeline['Jumlah Saham (Curr)'].iloc[-1]
             perubahan = akhir - awal
@@ -728,38 +771,55 @@ if selected_entity and selected_stock:
                 delta=f"{((perubahan/awal)*100):.1f}%" if awal > 0 else "N/A"
             )
         
-        with col_metric2:
+        with col_m2:
             total_beli = df_timeline[df_timeline['Perubahan_Saham'] > 0]['Perubahan_Saham'].sum()
             st.metric("Total Pembelian", format_lembar(total_beli))
         
-        with col_metric3:
+        with col_m3:
             total_jual = df_timeline[df_timeline['Perubahan_Saham'] < 0]['Perubahan_Saham'].sum()
             st.metric("Total Penjualan", format_lembar(abs(total_jual)))
         
-        with col_metric4:
-            avg_price = df_timeline['Close_Price'].mean()
-            st.metric("Rata-rata Harga", format_rupiah(avg_price))
+        with col_m4:
+            # Harga terakhir
+            last_price = df_harian[
+                df_harian['Stock Code'] == selected_stock
+            ]['Close'].iloc[-1] if not df_harian[df_harian['Stock Code'] == selected_stock].empty else 0
+            st.metric("Harga Terkini", format_rupiah(last_price))
         
-        # Tampilkan data detail
-        with st.expander("📋 Lihat Detail Transaksi"):
-            df_detail_timeline = df_timeline[[
+        # ============= DETAIL TRANSAKSI =============
+        with st.expander("📋 Lihat Detail Transaksi Harian"):
+            df_detail = df_timeline[[
                 'Tanggal_Data', 'Aksi', 'Perubahan_Saham', 
                 'Jumlah Saham (Curr)', 'Close_Price', 'Estimasi_Nilai'
             ]].copy()
             
-            df_detail_timeline['Perubahan_Saham'] = df_detail_timeline['Perubahan_Saham'].apply(format_lembar)
-            df_detail_timeline['Jumlah Saham (Curr)'] = df_detail_timeline['Jumlah Saham (Curr)'].apply(format_lembar)
-            df_detail_timeline['Close_Price'] = df_detail_timeline['Close_Price'].apply(format_rupiah)
-            df_detail_timeline['Estimasi_Nilai'] = df_detail_timeline['Estimasi_Nilai'].apply(format_rupiah)
+            df_detail['Tanggal_Data'] = df_detail['Tanggal_Data'].dt.strftime('%d-%m-%Y')
+            df_detail['Perubahan_Saham'] = df_detail['Perubahan_Saham'].apply(
+                lambda x: f"{format_lembar(x)} ({x:+,.0f})".replace(",", ".")
+            )
+            df_detail['Jumlah Saham (Curr)'] = df_detail['Jumlah Saham (Curr)'].apply(format_lembar)
+            df_detail['Close_Price'] = df_detail['Close_Price'].apply(format_rupiah)
+            df_detail['Estimasi_Nilai'] = df_detail['Estimasi_Nilai'].apply(format_rupiah)
             
             st.dataframe(
-                df_detail_timeline.sort_values('Tanggal_Data', ascending=False),
+                df_detail.sort_values('Tanggal_Data', ascending=False),
                 use_container_width=True,
                 hide_index=True
             )
+            
+            # Download button
+            csv = df_detail.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Detail Transaksi (CSV)",
+                data=csv,
+                file_name=f"{selected_stock}_{selected_rekening}_transaksi.csv",
+                mime="text/csv"
+            )
+            
     else:
-        st.info(f"Tidak ada data historis untuk {selected_entity} pada {selected_stock}")
-
+        st.info(f"Tidak ada data historis untuk rekening {selected_rekening} pada saham {selected_stock}")
+else:
+    st.info("Pilih Nama Pemegang Rekening Efek dan Kode Efek untuk melihat timeline")
 # =============================================================================
 # TAB 4: WATCHLIST & KONVERGENSI SINYAL
 # =============================================================================
