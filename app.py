@@ -112,6 +112,12 @@ with st.spinner('Memuat data KSEI...'):
 with st.spinner('Memuat data kepemilikan 5%...'):
     df_master = load_master_5()
 
+with st.sidebar.expander("🔧 Debug Info"):
+    st.write("**Kolom di df_harian:**")
+    st.write(list(df_harian.columns))
+    st.write("**Sample data:**")
+    st.dataframe(df_harian.head(2))
+    
 # Date range global
 min_date = df_harian['Last Trading Date'].min()
 max_date = df_harian['Last Trading Date'].max()
@@ -139,7 +145,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 # =============================================================================
-# TAB 1: MOMENTUM BANDAR (Harian)
+# TAB 1: MOMENTUM BANDAR (Harian) - VERSI FIX
 # =============================================================================
 with tab1:
     st.header("📈 Momentum & Anomali Bandar")
@@ -163,30 +169,67 @@ with tab1:
     if selected_sectors:
         df_filtered = df_filtered[df_filtered['Sector'].isin(selected_sectors)]
     
-    # Terapkan filter bandar
-    df_anomaly = df_filtered[
-        (df_filtered['Volume Spike (x)'] >= min_volume_spike) &
-        (df_filtered['Avg_Order_Volume'] >= min_ao_ratio * df_filtered['MA50_AOVol']) &
-        (df_filtered['Bid/Offer Imbalance'] >= min_imbalance)
-    ].copy()
+    # --- CEK KOLOM YANG TERSEDIA ---
+    required_cols = {
+        'Volume Spike (x)': min_volume_spike,
+        'Avg_Order_Volume': min_ao_ratio,
+        'MA50_AOVol': None,
+        'Bid/Offer Imbalance': min_imbalance
+    }
     
-    # Urutkan berdasarkan potensi terkuat
-    df_anomaly['Potensi'] = (
-        df_anomaly['Volume Spike (x)'] * 0.3 +
-        (df_anomaly['Avg_Order_Volume'] / df_anomaly['MA50_AOVol']) * 0.4 +
-        (df_anomaly['Bid/Offer Imbalance'] + 1) * 0.3
-    )
+    # Filter hanya kolom yang ada
+    filter_condition = pd.Series([True] * len(df_filtered))
+    
+    if 'Volume Spike (x)' in df_filtered.columns:
+        filter_condition &= (df_filtered['Volume Spike (x)'] >= min_volume_spike)
+    else:
+        st.warning("⚠️ Kolom 'Volume Spike (x)' tidak ditemukan. Volume spike tidak difilter.")
+    
+    if 'Avg_Order_Volume' in df_filtered.columns and 'MA50_AOVol' in df_filtered.columns:
+        ao_ratio = df_filtered['Avg_Order_Volume'] / df_filtered['MA50_AOVol'].replace(0, np.nan)
+        filter_condition &= (ao_ratio >= min_ao_ratio)
+    else:
+        st.warning("⚠️ Kolom AOVol tidak lengkap. Anomali order volume tidak difilter.")
+    
+    if 'Bid/Offer Imbalance' in df_filtered.columns:
+        filter_condition &= (df_filtered['Bid/Offer Imbalance'] >= min_imbalance)
+    else:
+        st.warning("⚠️ Kolom 'Bid/Offer Imbalance' tidak ditemukan.")
+    
+    # Terapkan filter
+    df_anomaly = df_filtered[filter_condition].copy()
+    
+    # Hitung potensi hanya jika kolom tersedia
+    df_anomaly['Potensi'] = 0  # default
+    
+    if 'Volume Spike (x)' in df_anomaly.columns:
+        df_anomaly['Potensi'] += df_anomaly['Volume Spike (x)'] * 0.3
+    
+    if 'Avg_Order_Volume' in df_anomaly.columns and 'MA50_AOVol' in df_anomaly.columns:
+        ao_ratio_val = df_anomaly['Avg_Order_Volume'] / df_anomaly['MA50_AOVol'].replace(0, np.nan)
+        df_anomaly['Potensi'] += ao_ratio_val.fillna(0) * 0.4
+    
+    if 'Bid/Offer Imbalance' in df_anomaly.columns:
+        df_anomaly['Potensi'] += (df_anomaly['Bid/Offer Imbalance'] + 1) * 0.3
+    
     df_anomaly = df_anomaly.sort_values('Potensi', ascending=False)
     
     # Tampilkan metrik
     st.subheader(f"🎯 {len(df_anomaly)} Saham dengan Aktivitas Bandar Terdeteksi")
     
     if not df_anomaly.empty:
-        cols_display = ['Stock Code', 'Last Trading Date', 'Close', 'Change %', 
-                        'Volume Spike (x)', 'Avg_Order_Volume', 'MA50_AOVol',
-                        'Bid/Offer Imbalance', 'Net Foreign Flow', 'Final Signal', 'Potensi']
+        # Siapkan kolom display yang pasti ada
+        display_cols = ['Stock Code', 'Last Trading Date']
         
-        display_cols = [c for c in cols_display if c in df_anomaly.columns]
+        # Tambahkan kolom opsional jika ada
+        optional_cols = ['Close', 'Change %', 'Volume Spike (x)', 'Avg_Order_Volume', 
+                        'MA50_AOVol', 'Bid/Offer Imbalance', 'Net Foreign Flow', 
+                        'Final Signal', 'Potensi']
+        
+        for col in optional_cols:
+            if col in df_anomaly.columns:
+                display_cols.append(col)
+        
         st.dataframe(
             df_anomaly[display_cols].head(100),
             use_container_width=True,
@@ -202,22 +245,39 @@ with tab1:
             }
         )
         
-        # Visualisasi scatter
+        # --- VISUALISASI SCATTER (FIX) ---
         st.subheader("📊 Volume Spike vs AOVol Ratio")
-        fig = px.scatter(
-            df_anomaly.head(50),
-            x='Volume Spike (x)',
-            y=df_anomaly['Avg_Order_Volume'] / df_anomaly['MA50_AOVol'],
-            color='Final Signal',
-            size='Potensi',
-            hover_data=['Stock Code', 'Close'],
-            title="Semakin ke kanan atas = Semakin kuat akumulasi"
-        )
-        fig.update_layout(height=500)
-        st.plotly_chart(fig, use_container_width=True)
+        
+        # Pastikan kolom untuk scatter tersedia
+        if ('Volume Spike (x)' in df_anomaly.columns and 
+            'Avg_Order_Volume' in df_anomaly.columns and 
+            'MA50_AOVol' in df_anomaly.columns and
+            'Final Signal' in df_anomaly.columns):
+            
+            # Hitung AOVol Ratio
+            df_scatter = df_anomaly.head(50).copy()
+            df_scatter['AOVol_Ratio'] = df_scatter['Avg_Order_Volume'] / df_scatter['MA50_AOVol'].replace(0, np.nan)
+            df_scatter = df_scatter.dropna(subset=['Volume Spike (x)', 'AOVol_Ratio', 'Final Signal'])
+            
+            if not df_scatter.empty:
+                fig = px.scatter(
+                    df_scatter,
+                    x='Volume Spike (x)',
+                    y='AOVol_Ratio',
+                    color='Final Signal',
+                    size='Potensi' if 'Potensi' in df_scatter.columns else None,
+                    hover_data=['Stock Code', 'Close'] if 'Close' in df_scatter.columns else ['Stock Code'],
+                    title="Semakin ke kanan atas = Semakin kuat akumulasi"
+                )
+                fig.update_layout(height=500)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Data tidak cukup untuk scatter plot. Coba turunkan threshold.")
+        else:
+            st.warning("Kolom yang diperlukan untuk scatter plot tidak tersedia.")
         
     else:
-        st.warning("Tidak ada saham dengan kriteria tersebut. Coba turunkan threshold.")
+        st.info("Tidak ada saham dengan kriteria tersebut. Coba turunkan threshold.")
 
 # =============================================================================
 # TAB 2: KSEI BIG MONEY TRACKER (Bulanan)
