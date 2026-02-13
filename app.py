@@ -6,27 +6,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # =============================================================================
-# FORMATTER ANGKA (SUPAYA ENAK DIBACA)
-# =============================================================================
-def format_rupiah(angka):
-    """Format angka ke Rupiah dengan separator koma"""
-    if pd.isna(angka) or angka == 0:
-        return "Rp 0"
-    return f"Rp {angka:,.0f}".replace(",", ".")
-
-def format_lembar(angka):
-    """Format lembar saham dengan separator koma"""
-    if pd.isna(angka) or angka == 0:
-        return "0"
-    return f"{angka:,.0f}".replace(",", ".")
-
-def format_persen(angka):
-    """Format persentase dengan 2 desimal"""
-    if pd.isna(angka):
-        return "0.00%"
-    return f"{angka:.2f}%"
-    
-# =============================================================================
 # KONFIGURASI: LINK GOOGLE DRIVE (PUBLIC SHARING)
 # =============================================================================
 # Cara setting: File di GDrive -> Share -> "Anyone with link" -> Copy link ID
@@ -107,6 +86,29 @@ def load_master_5():
     df['Estimasi_Nilai'] = df['Perubahan_Saham'] * df['Close_Price']
     
     return df
+
+# =============================================================================
+# FORMATTER ANGKA (SUPAYA ENAK DIBACA)
+# =============================================================================
+def format_rupiah(angka):
+    """Format angka ke Rupiah dengan separator koma"""
+    if pd.isna(angka) or angka == 0:
+        return "Rp 0"
+    return f"Rp {angka:,.0f}".replace(",", ".")
+
+def format_lembar(angka):
+    """Format lembar saham dengan separator koma"""
+    if pd.isna(angka) or angka == 0:
+        return "0"
+    return f"{angka:,.0f}".replace(",", ".")
+
+def format_persen(angka):
+    """Format persentase dengan 2 desimal"""
+    if pd.isna(angka):
+        return "0.00%"
+    return f"{angka:.2f}%"
+    
+
 
 # =============================================================================
 # KONFIGURASI HALAMAN (WAJIB PALING ATAS)
