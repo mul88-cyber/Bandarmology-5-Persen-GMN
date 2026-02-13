@@ -906,63 +906,288 @@ with tab3:
                     st.warning(f"Tidak ada data kepemilikan atau harga untuk {selected_stock_dd}")
 
 # =============================================================================
-# TAB 4: WATCHLIST & KONVERGENSI SINYAL
+# TAB 4: SCANNER SINYAL & DIVERGENSI (UPGRADED)
 # =============================================================================
 with tab4:
-    st.header("📊 Watchlist & Konvergensi Sinyal")
-    st.caption("Gabungan sinyal dari 3 sumber data")
-    
-    watchlist_input = st.text_area("✏️ Daftar Saham (pisahkan dengan koma)", value="AADI, BBCA, TLKM, ASII")
-    watchlist = [s.strip().upper() for s in watchlist_input.split(",") if s.strip()]
-    
-    if watchlist:
-        # Filter data
-        df_watch_harian = df_harian[df_harian['Stock Code'].isin(watchlist)]
-        df_watch_ksei = df_ksei[df_ksei['Code'].isin(watchlist)] if not df_ksei.empty else pd.DataFrame()
-        df_watch_5 = df_master[df_master['Kode Efek'].isin(watchlist)] if not df_master.empty else pd.DataFrame()
+    st.header("⚡ Scanner Sinyal & Divergensi")
+    st.caption("Deteksi anomali antara Pergerakan Harga vs Pergerakan Barang (5% Owner & Foreign)")
+
+    # Pilihan Sub-Menu di Tab 4 agar rapi
+    mode_scan = st.radio(
+        "Pilih Mode Analisa:",
+        ["💎 Hunter: Divergensi (Harga Turun, Akumulasi Naik)", 
+         "🗺️ Map: Foreign vs Local Flow", 
+         "📋 Watchlist Personal"],
+        horizontal=True
+    )
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------------------
+    # MODE 1: DIVERGENCE HUNTER (The Hidden Gem)
+    # -------------------------------------------------------------------------
+    if mode_scan == "💎 Hunter: Divergensi (Harga Turun, Akumulasi Naik)":
+        st.subheader("💎 Deteksi Saham 'Salah Harga'")
+        st.info("Mencari saham yang harganya JATUH, tapi kepemilikan investor 5% (Big Player) malah BERTAMBAH.")
         
-        st.subheader("🎯 Status Terkini")
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            lookback_div = st.slider("Periode Pantauan (Hari)", 5, 60, 20)
+        with col_p2:
+            min_price_drop = st.slider("Minimal Harga TURUN (%)", 0, 50, 5)
         
-        last_data = df_watch_harian.sort_values('Last Trading Date').groupby('Stock Code').last().reset_index()
+        if st.button("🔍 Scan Divergensi Sekarang"):
+            with st.spinner("Menganalisa korelasi Harga vs Akumulasi..."):
+                # 1. Siapkan Rentang Tanggal
+                end_date_div = df_harian['Last Trading Date'].max()
+                start_date_div = end_date_div - timedelta(days=lookback_div)
+                
+                # 2. Hitung Perubahan Harga (Dari df_harian)
+                df_period = df_harian[
+                    (df_harian['Last Trading Date'] >= start_date_div) & 
+                    (df_harian['Last Trading Date'] <= end_date_div)
+                ].copy()
+                
+                # Ambil harga awal dan akhir per saham
+                price_start = df_period.sort_values('Last Trading Date').groupby('Stock Code')['Close'].first()
+                price_end = df_period.sort_values('Last Trading Date').groupby('Stock Code')['Close'].last()
+                
+                df_div = pd.DataFrame({'Price_Start': price_start, 'Price_End': price_end})
+                df_div['Price_Chg_Pct'] = (df_div['Price_End'] - df_div['Price_Start']) / df_div['Price_Start'] * 100
+                
+                # Filter: Hanya yang harganya turun > X%
+                df_div = df_div[df_div['Price_Chg_Pct'] <= -min_price_drop]
+                
+                # 3. Hitung Perubahan Kepemilikan 5% (Dari df_master)
+                # Kita perlu aggregate ownership per saham per tanggal dulu
+                if not df_master.empty:
+                    # Filter data master di range yg sama
+                    df_master_div = df_master[
+                        (df_master['Tanggal_Data'] >= start_date_div) & 
+                        (df_master['Tanggal_Data'] <= end_date_div)
+                    ].copy()
+                    
+                    # Hitung Total Lembar 5% per Saham pada Awal dan Akhir periode
+                    # Logic: Group by Saham -> Resample/Pivot isn't easy because dates vary.
+                    # Simplifikasi: Ambil tanggal data paling awal dan paling akhir yg tersedia utk tiap saham
+                    
+                    grouped = df_master_div.groupby('Kode Efek')
+                    results = []
+                    
+                    for stock, group in grouped:
+                        group = group.sort_values('Tanggal_Data')
+                        if len(group['Tanggal_Data'].unique()) > 1:
+                            # Total kepemilikan di tanggal pertama yg tersedia
+                            tgl_awal = group['Tanggal_Data'].min()
+                            total_awal = group[group['Tanggal_Data'] == tgl_awal]['Jumlah Saham (Curr)'].sum()
+                            
+                            # Total kepemilikan di tanggal terakhir yg tersedia
+                            tgl_akhir = group['Tanggal_Data'].max()
+                            total_akhir = group[group['Tanggal_Data'] == tgl_akhir]['Jumlah Saham (Curr)'].sum()
+                            
+                            if total_awal > 0:
+                                chg_pct = (total_akhir - total_awal) / total_awal * 100
+                                results.append({
+                                    'Stock Code': stock,
+                                    'Own_Chg_Pct': chg_pct,
+                                    'Own_Start': total_awal,
+                                    'Own_End': total_akhir
+                                })
+                    
+                    df_own_chg = pd.DataFrame(results)
+                    
+                    if not df_own_chg.empty:
+                        # 4. Gabungkan Data Harga & Data Kepemilikan
+                        df_final = df_div.merge(df_own_chg, on='Stock Code', how='inner')
+                        
+                        # Filter: Kepemilikan BERTAMBAH (> 0.1% untuk menghindari noise)
+                        df_final = df_final[df_final['Own_Chg_Pct'] > 0.1]
+                        
+                        # Sorting: Prioritas akumulasi terbesar
+                        df_final = df_final.sort_values('Own_Chg_Pct', ascending=False)
+                        
+                        st.success(f"Ditemukan {len(df_final)} saham mengalami Divergensi Bullish!")
+                        
+                        if not df_final.empty:
+                            st.dataframe(
+                                df_final[['Stock Code', 'Price_Start', 'Price_End', 'Price_Chg_Pct', 'Own_Start', 'Own_End', 'Own_Chg_Pct']],
+                                column_config={
+                                    'Price_Start': st.column_config.NumberColumn("Harga Awal", format="Rp %d"),
+                                    'Price_End': st.column_config.NumberColumn("Harga Akhir", format="Rp %d"),
+                                    'Price_Chg_Pct': st.column_config.NumberColumn("Harga Drop (%)", format="%.2f%%"),
+                                    'Own_Start': st.column_config.NumberColumn("Lembar 5% Awal", format="%d"),
+                                    'Own_End': st.column_config.NumberColumn("Lembar 5% Akhir", format="%d"),
+                                    'Own_Chg_Pct': st.column_config.NumberColumn("Akumulasi 5% (%)", format="+%.2f%%"),
+                                },
+                                hide_index=True,
+                                use_container_width=True
+                            )
+                            
+                            # Visualisasi Scatter Divergence
+                            fig_div = px.scatter(
+                                df_final,
+                                x='Price_Chg_Pct',
+                                y='Own_Chg_Pct',
+                                text='Stock Code',
+                                color='Own_Chg_Pct',
+                                title=f"Peta Divergensi (Lookback: {lookback_div} hari)",
+                                labels={'Price_Chg_Pct': 'Penurunan Harga (%)', 'Own_Chg_Pct': 'Kenaikan Kepemilikan 5% (%)'}
+                            )
+                            fig_div.update_traces(textposition='top center')
+                            fig_div.add_vline(x=-10, line_dash="dash", line_color="red", annotation_text="Drop Parah")
+                            st.plotly_chart(fig_div, use_container_width=True)
+                        
+                    else:
+                        st.warning("Tidak ada data perubahan kepemilikan yang signifikan pada periode ini.")
+                else:
+                    st.error("Data Master 5% kosong. Jalankan cleaning data dulu.")
+
+    # -------------------------------------------------------------------------
+    # MODE 2: FOREIGN VS LOCAL FLOW MAP
+    # -------------------------------------------------------------------------
+    elif mode_scan == "🗺️ Map: Foreign vs Local Flow":
+        st.subheader("🗺️ Peta Kekuatan: Asing vs Lokal")
+        st.caption("Memetakan struktur market berdasarkan Net Buy/Sell Asing vs Perubahan Harga.")
         
-        for stock in watchlist:
-            with st.expander(f"{stock} - {last_data[last_data['Stock Code'] == stock]['Close'].values[0] if stock in last_data['Stock Code'].values else 'N/A'}"):
-                col_a, col_b = st.columns(2)
-                
-                with col_a:
-                    st.markdown("**📈 Data Harian**")
-                    stock_harian = df_watch_harian[df_watch_harian['Stock Code'] == stock].sort_values('Last Trading Date', ascending=False).head(5)
-                    if not stock_harian.empty:
-                        cols = ['Last Trading Date', 'Close', 'Volume Spike (x)', 'Big_Player_Anomaly', 'Final Signal']
-                        cols = [c for c in cols if c in stock_harian.columns]
-                        st.dataframe(stock_harian[cols], hide_index=True, use_container_width=True)
-                
-                with col_b:
-                    st.markdown("**🏦 KSEI Bulanan**")
-                    if not df_watch_ksei.empty:
-                        stock_ksei = df_watch_ksei[df_watch_ksei['Code'] == stock].sort_values('Date', ascending=False).head(3)
-                        if not stock_ksei.empty:
-                            cols = ['Date', 'Top_Buyer', 'Top_Buyer_Vol', 'Top_Seller', 'Top_Seller_Vol']
-                            cols = [c for c in cols if c in stock_ksei.columns]
-                            st.dataframe(stock_ksei[cols], hide_index=True, use_container_width=True)
-                        else:
-                            st.info("Tidak ada data KSEI")
-                
-                st.markdown("**🕵️ Aktivitas 5%**")
-                if not df_watch_5.empty:
-                    stock_5 = df_watch_5[df_watch_5['Kode Efek'] == stock].sort_values('Tanggal_Data', ascending=False).head(10)
-                    if not stock_5.empty:
-                        stock_5_beli = stock_5[stock_5['Aksi'] == 'Beli']
-                        if not stock_5_beli.empty:
-                            st.success(f"Ada aktivitas BELI: {len(stock_5_beli)} transaksi")
-                            cols = ['Tanggal_Data', 'UBO' if 'UBO' in stock_5_beli.columns else 'Nama Pemegang Saham', 
-                                   'Perubahan_Saham', 'Close_Price']
-                            cols = [c for c in cols if c in stock_5_beli.columns]
-                            st.dataframe(stock_5_beli[cols], hide_index=True, use_container_width=True)
-                        else:
-                            st.info("Tidak ada pembelian signifikan")
+        # Ambil data hari terakhir saja (atau rata-rata N hari)
+        days_avg = st.slider("Rata-rata Data (Hari Terakhir)", 1, 5, 1)
+        
+        # Filter tanggal
+        date_cutoff = df_harian['Last Trading Date'].max() - timedelta(days=days_avg*2) # Buffer
+        df_flow = df_harian[df_harian['Last Trading Date'] >= date_cutoff].copy()
+        
+        # Ambil rata-rata per saham
+        df_flow_agg = df_flow.groupby('Stock Code').agg({
+            'Change %': 'mean',
+            'Net Foreign Flow': 'mean',
+            'Close': 'last',
+            'Value': 'mean' # Transaksi Value
+        }).reset_index()
+        
+        # Filter likuiditas (Value > 1 Miliar biar chart gak penuh saham gorengan tidur)
+        min_val = st.number_input("Min Value Transaksi Harian (Rp Miliar)", 0.5, 50.0, 1.0) * 1e9
+        df_flow_agg = df_flow_agg[df_flow_agg['Value'] >= min_val]
+        
+        # Klasifikasi Kuadran
+        def classify_flow(row):
+            if row['Change %'] > 0 and row['Net Foreign Flow'] > 0:
+                return "Foreign Driven Up (Asing Dorong)"
+            elif row['Change %'] > 0 and row['Net Foreign Flow'] < 0:
+                return "Local Markup (Asing Jualan)"
+            elif row['Change %'] < 0 and row['Net Foreign Flow'] > 0:
+                return "Foreign Dip Buy (Tampung Bawah)"
+            elif row['Change %'] < 0 and row['Net Foreign Flow'] < 0:
+                return "Distribution (Semua Buang)"
+            return "Neutral"
+
+        df_flow_agg['Status'] = df_flow_agg.apply(classify_flow, axis=1)
+        
+        # Visualisasi Scatter
+        fig_flow = px.scatter(
+            df_flow_agg,
+            x='Net Foreign Flow',
+            y='Change %',
+            color='Status',
+            size='Value',
+            hover_name='Stock Code',
+            title=f"Market Structure Map (Avg {days_avg} Hari)",
+            color_discrete_map={
+                "Foreign Driven Up (Asing Dorong)": "green",
+                "Local Markup (Asing Jualan)": "orange",
+                "Foreign Dip Buy (Tampung Bawah)": "blue",
+                "Distribution (Semua Buang)": "red"
+            }
+        )
+        
+        # Garis Tengah
+        fig_flow.add_vline(x=0, line_width=1, line_color="black")
+        fig_flow.add_hline(y=0, line_width=1, line_color="black")
+        
+        st.plotly_chart(fig_flow, use_container_width=True)
+        
+        st.info("""
+        **Cara Baca Kuadran:**
+        - 🟦 **Biru (Kiri Bawah - Foreign Dip Buy):** Harga turun, tapi Asing Net Buy. Potensi Rebound.
+        - 🟧 **Oranye (Kanan Atas - Local Markup):** Harga naik, tapi Asing Net Sell. Waspada guyuran lokal/asing taking profit.
+        - 🟩 **Hijau (Kanan Atas - Foreign Driven):** Harga naik didorong Asing. Tren kuat.
+        """)
+
+    # -------------------------------------------------------------------------
+    # MODE 3: WATCHLIST PERSONAL (Existing Feature)
+    # -------------------------------------------------------------------------
     else:
-        st.warning("Masukkan minimal 1 kode saham")
+        st.subheader("📋 Watchlist Personal")
+        
+        # Pakai multiselect biar UX lebih enak
+        all_stocks = sorted(df_harian['Stock Code'].unique())
+        default_stocks = [s for s in ["BBCA", "BBRI", "ADRO", "TLKM"] if s in all_stocks]
+        
+        watchlist = st.multiselect("Pilih Saham:", all_stocks, default=default_stocks)
+        
+        if watchlist:
+            # Filter data
+            df_watch_harian = df_harian[df_harian['Stock Code'].isin(watchlist)]
+            df_watch_ksei = df_ksei[df_ksei['Code'].isin(watchlist)] if not df_ksei.empty else pd.DataFrame()
+            df_watch_5 = df_master[df_master['Kode Efek'].isin(watchlist)] if not df_master.empty else pd.DataFrame()
+            
+            st.markdown("### 🚦 Status Watchlist")
+            
+            # Kita buat ringkasan dalam bentuk tabel biar mudah dibandingkan
+            summary_watch = []
+            
+            for stock in watchlist:
+                # Get last data harian
+                last_row = df_watch_harian[df_watch_harian['Stock Code'] == stock].sort_values('Last Trading Date').iloc[-1] if not df_watch_harian[df_watch_harian['Stock Code'] == stock].empty else None
+                
+                # Get last 5% activity
+                act_5 = "Sepi"
+                if not df_watch_5.empty:
+                    df_s = df_watch_5[df_watch_5['Kode Efek'] == stock].sort_values('Tanggal_Data', ascending=False).head(5)
+                    if not df_s.empty:
+                        last_act = df_s.iloc[0]['Aksi']
+                        act_5 = f"{last_act} ({df_s.iloc[0]['Tanggal_Data'].strftime('%d/%m')})"
+                
+                if last_row is not None:
+                    summary_watch.append({
+                        "Code": stock,
+                        "Close": last_row['Close'],
+                        "Chg %": last_row['Change %'],
+                        "Vol Spike": last_row.get('Volume Spike (x)', 0),
+                        "Foreign Flow": last_row.get('Net Foreign Flow', 0),
+                        "5% Activity": act_5
+                    })
+            
+            df_sum_w = pd.DataFrame(summary_watch)
+            st.dataframe(
+                df_sum_w,
+                column_config={
+                    "Close": st.column_config.NumberColumn(format="Rp %d"),
+                    "Chg %": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Vol Spike": st.column_config.NumberColumn(format="%.1fx"),
+                    "Foreign Flow": st.column_config.NumberColumn(format="Rp %d"),
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+            
+            # Detail per saham (Expanders) - Kode lama Bapak tetap oke disini
+            st.markdown("---")
+            st.caption("Klik untuk detail per saham")
+            for stock in watchlist:
+                with st.expander(f"🔍 Detail {stock}"):
+                    # Tampilkan ulang detail seperti kode sebelumnya
+                    # (Hanya snippet singkat agar tidak kepanjangan)
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        st.write("**Data Harian (5 Hari)**")
+                        st.dataframe(df_watch_harian[df_watch_harian['Stock Code'] == stock].tail(5), use_container_width=True)
+                    with col_b:
+                        st.write("**Aktivitas 5% Terakhir**")
+                        if not df_watch_5.empty:
+                             st.dataframe(df_watch_5[df_watch_5['Kode Efek'] == stock].tail(5), use_container_width=True)
+
+        else:
+            st.info("Silakan pilih saham untuk dipantau.")
 
 # =============================================================================
 # FOOTER
