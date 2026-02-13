@@ -6,6 +6,27 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # =============================================================================
+# FORMATTER ANGKA (SUPAYA ENAK DIBACA)
+# =============================================================================
+def format_rupiah(angka):
+    """Format angka ke Rupiah dengan separator koma"""
+    if pd.isna(angka) or angka == 0:
+        return "Rp 0"
+    return f"Rp {angka:,.0f}".replace(",", ".")
+
+def format_lembar(angka):
+    """Format lembar saham dengan separator koma"""
+    if pd.isna(angka) or angka == 0:
+        return "0"
+    return f"{angka:,.0f}".replace(",", ".")
+
+def format_persen(angka):
+    """Format persentase dengan 2 desimal"""
+    if pd.isna(angka):
+        return "0.00%"
+    return f"{angka:.2f}%"
+    
+# =============================================================================
 # KONFIGURASI: LINK GOOGLE DRIVE (PUBLIC SHARING)
 # =============================================================================
 # Cara setting: File di GDrive -> Share -> "Anyone with link" -> Copy link ID
@@ -341,7 +362,7 @@ with tab2:
             st.warning(f"Data tidak ditemukan untuk {kode_saham}")
 
 # =============================================================================
-# TAB 3: AKUMULASI AWAL DARI DATA 5% (SENJATA ANDALAN)
+# TAB 3: AKUMULASI AWAL DARI DATA 5% (DENGAN LINE CHART DEEP DIVE)
 # =============================================================================
 with tab3:
     st.header("🕵️ DETEKSI AKUMULASI AWAL (Data 5%)")
@@ -367,16 +388,14 @@ with tab3:
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        min_beli = st.number_input("Minimal Beli (lembar)", min_value=1000, value=100000, step=10000, help="Filter pembelian minimal")
+        min_beli = st.number_input("Minimal Beli (lembar)", min_value=1000, value=100000, step=10000, 
+                                   help="Filter pembelian minimal", format="%d")
     with col2:
-        max_saham_beredar = st.number_input("Maksimal Kepemilikan (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.5, help="Batas atas % kepemilikan (bandar awal < 10%)")
+        max_saham_beredar = st.number_input("Maksimal Kepemilikan (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.5, 
+                                           help="Batas atas % kepemilikan (bandar awal < 10%)")
     with col3:
-        lookback_days = st.number_input("Lookback (hari)", min_value=7, max_value=90, value=30, help="Dalam X hari terakhir")
-    
-    # Hitung total saham beredar per kode
-    # Asumsi: Total saham bisa diambil dari data KSEI atau dari harga * free float? 
-    # Untuk sederhana, kita pakai estimasi: Close_Price * something.
-    # TAPI untuk deteksi akumulasi awal, kita fokus ke PEMBELI BARU atau PENAMBAHAN SIGNIFIKAN.
+        lookback_days = st.number_input("Lookback (hari)", min_value=7, max_value=90, value=30, 
+                                       help="Dalam X hari terakhir")
     
     # 1. Filter: Aksi BELI dan jumlah beli >= minimal
     df_beli = df_master_filtered[
@@ -402,10 +421,6 @@ with tab3:
                             'Total_Beli_Lembar', 'Total_Nilai_Rp', 
                             'Tgl_Pertama', 'Tgl_Terakhir', 'Frekuensi_Transaksi']
     
-    # Filter: maksimal kepemilikan (estimasi)
-    # Kita tidak punya data total saham beredar, jadi kita abaikan atau bisa merge dari data lain
-    # Sementara skip filter max_saham_beredar, fokus ke akumulasi besar
-    
     # 4. Skor Akumulasi Awal
     df_akumulasi['Skor_Akumulasi'] = (
         np.log1p(df_akumulasi['Total_Beli_Lembar']) * 0.5 +
@@ -415,7 +430,7 @@ with tab3:
     
     df_akumulasi = df_akumulasi.sort_values('Skor_Akumulasi', ascending=False)
     
-    # TAMPILKAN HASIL
+    # TAMPILKAN HASIL DENGAN FORMAT RIBUAN
     st.subheader(f"🎯 {len(df_akumulasi)} Entitas dengan Indikasi Akumulasi Awal")
     st.caption("Semakin tinggi Skor = Semakin agresif akumulasi dalam waktu singkat")
     
@@ -428,16 +443,23 @@ with tab3:
             how='left'
         )
         
+        # Buat versi display dengan format yang sudah diformat
+        df_display = df_akumulasi.copy()
+        df_display['Total_Beli_Lembar_Display'] = df_display['Total_Beli_Lembar'].apply(format_lembar)
+        df_display['Total_Nilai_Rp_Display'] = df_display['Total_Nilai_Rp'].apply(format_rupiah)
+        df_display['Skor_Display'] = df_display['Skor_Akumulasi'].apply(lambda x: f"{x:.2f}")
+        
         st.dataframe(
-            df_akumulasi[['Kode Efek', 'Nama Pemegang Saham', 'Nama Rekening', 'Sector',
-                         'Total_Beli_Lembar', 'Total_Nilai_Rp', 'Frekuensi_Transaksi',
-                         'Tgl_Pertama', 'Tgl_Terakhir', 'Skor_Akumulasi']].head(50),
+            df_display[['Kode Efek', 'Nama Pemegang Saham', 'Sector',
+                       'Total_Beli_Lembar_Display', 'Total_Nilai_Rp_Display', 
+                       'Frekuensi_Transaksi', 'Tgl_Pertama', 'Tgl_Terakhir', 'Skor_Display']].head(50),
             column_config={
-                'Total_Beli_Lembar': st.column_config.NumberColumn(format="%d", help="Total lembar dibeli"),
-                'Total_Nilai_Rp': st.column_config.NumberColumn(format="Rp %d"),
+                'Total_Beli_Lembar_Display': st.column_config.TextColumn("Total Beli (Lembar)"),
+                'Total_Nilai_Rp_Display': st.column_config.TextColumn("Estimasi Nilai"),
+                'Frekuensi_Transaksi': st.column_config.NumberColumn(format="%d"),
                 'Tgl_Pertama': st.column_config.DateColumn(format="DD-MM-YY"),
                 'Tgl_Terakhir': st.column_config.DateColumn(format="DD-MM-YY"),
-                'Skor_Akumulasi': st.column_config.NumberColumn(format="%.2f")
+                'Skor_Display': st.column_config.TextColumn("Skor")
             },
             use_container_width=True,
             hide_index=True
@@ -447,6 +469,7 @@ with tab3:
         st.subheader("💰 Top 10 Entitas Akumulator Terbesar (Nilai Rp)")
         top10 = df_akumulasi.nlargest(10, 'Total_Nilai_Rp').copy()
         top10['Label'] = top10['Nama Pemegang Saham'].str[:30] + '...'
+        top10['Nilai_Display'] = top10['Total_Nilai_Rp'].apply(format_rupiah)
         
         fig = px.bar(
             top10,
@@ -455,32 +478,184 @@ with tab3:
             color='Sector',
             orientation='h',
             title="Total Nilai Pembelian (Estimasi)",
-            labels={'Total_Nilai_Rp': 'Nilai (Rp)', 'Label': 'Pemegang Saham'}
+            labels={'Total_Nilai_Rp': 'Nilai (Rp)', 'Label': 'Pemegang Saham'},
+            hover_data={'Total_Nilai_Rp': False, 'Nilai_Display': True, 'Kode Efek': True}
         )
         fig.update_layout(height=500)
+        fig.update_xaxes(tickformat=",.0f")  # Format sumbu x dengan separator
         st.plotly_chart(fig, use_container_width=True)
         
-        # Analisis per saham
-        st.subheader("🔍 Detail Saham Terakumulasi")
-        kode_5 = st.selectbox("Pilih Kode Efek", df_akumulasi['Kode Efek'].unique())
+        # ============= DEEP DIVE LINE CHART =============
+        st.subheader("📈 DEEP DIVE: Timeline Akumulasi per Entitas")
+        st.caption("Pilih entitas untuk melihat pergerakan kepemilikan dari waktu ke waktu")
         
-        if kode_5:
-            df_detail_5 = df_master_filtered[
-                (df_master_filtered['Kode Efek'] == kode_5) &
-                (df_master_filtered['Aksi'] == 'Beli')
-            ].sort_values('Tanggal_Data', ascending=False)
-            
-            st.dataframe(
-                df_detail_5[['Tanggal_Data', 'Nama Pemegang Saham', 'Nama Pemegang Rekening Efek',
-                           'Perubahan_Saham', 'Close_Price', 'Estimasi_Nilai']],
-                column_config={
-                    'Perubahan_Saham': st.column_config.NumberColumn(format="%d"),
-                    'Close_Price': st.column_config.NumberColumn(format="Rp %d"),
-                    'Estimasi_Nilai': st.column_config.NumberColumn(format="Rp %d")
-                },
-                use_container_width=True,
-                hide_index=True
+        # Input untuk deep dive
+        col_a, col_b = st.columns([2, 1])
+        with col_a:
+            # Pilihan entitas dari hasil akumulasi
+            entity_options = df_akumulasi['Nama Pemegang Saham'].unique()
+            selected_entity = st.selectbox(
+                "Pilih Nama Pemegang Saham",
+                entity_options,
+                index=0 if len(entity_options) > 0 else None
             )
+        
+        with col_b:
+            # Pilihan saham spesifik dari entitas tersebut
+            if selected_entity:
+                stocks_of_entity = df_akumulasi[df_akumulasi['Nama Pemegang Saham'] == selected_entity]['Kode Efek'].unique()
+                selected_stock = st.selectbox(
+                    "Pilih Kode Efek",
+                    stocks_of_entity,
+                    index=0 if len(stocks_of_entity) > 0 else None
+                )
+        
+        if selected_entity and selected_stock:
+            # Filter data untuk entitas dan saham terpilih
+            df_timeline = df_master_filtered[
+                (df_master_filtered['Nama Pemegang Saham'] == selected_entity) &
+                (df_master_filtered['Kode Efek'] == selected_stock)
+            ].sort_values('Tanggal_Data').copy()
+            
+            if not df_timeline.empty:
+                # Hitung kumulatif kepemilikan
+                df_timeline['Kepemilikan_Kumulatif'] = df_timeline['Jumlah Saham (Curr)'].cumsum()  # atau pakai Curr langsung?
+                # Lebih tepat: Karena ini sudah snapshot, kita pakai Jumlah Saham (Curr) per tanggal
+                df_timeline['Kepemilikan'] = df_timeline['Jumlah Saham (Curr)']
+                
+                # Hitung perubahan bersih dari awal periode
+                df_timeline['Perubahan_Dari_Awal'] = df_timeline['Kepemilikan'] - df_timeline['Kepemilikan'].iloc[0]
+                
+                # Buat line chart dengan dual axis
+                fig_deep = go.Figure()
+                
+                # Line chart: Kepemilikan
+                fig_deep.add_trace(go.Scatter(
+                    x=df_timeline['Tanggal_Data'],
+                    y=df_timeline['Kepemilikan'],
+                    mode='lines+markers',
+                    name='Jumlah Kepemilikan',
+                    line=dict(color='#2E86AB', width=3),
+                    marker=dict(size=8),
+                    yaxis='y',
+                    hovertemplate='Tanggal: %{x|%d-%m-%Y}<br>Kepemilikan: %{customdata}<extra></extra>',
+                    customdata=df_timeline['Kepemilikan'].apply(lambda x: format_lembar(x))
+                ))
+                
+                # Line chart: Harga Close (secondary axis)
+                if 'Close_Price' in df_timeline.columns:
+                    fig_deep.add_trace(go.Scatter(
+                        x=df_timeline['Tanggal_Data'],
+                        y=df_timeline['Close_Price'],
+                        mode='lines+markers',
+                        name='Harga Close',
+                        line=dict(color='#E88873', width=2, dash='dot'),
+                        marker=dict(size=6),
+                        yaxis='y2',
+                        hovertemplate='Tanggal: %{x|%d-%m-%Y}<br>Harga: %{customdata}<extra></extra>',
+                        customdata=df_timeline['Close_Price'].apply(lambda x: format_rupiah(x))
+                    ))
+                
+                # Bar chart: Volume Beli/Jual
+                colors = ['#2ECC71' if x > 0 else '#E74C3C' for x in df_timeline['Perubahan_Saham']]
+                fig_deep.add_trace(go.Bar(
+                    x=df_timeline['Tanggal_Data'],
+                    y=df_timeline['Perubahan_Saham'],
+                    name='Transaksi',
+                    marker_color=colors,
+                    opacity=0.5,
+                    yaxis='y3',
+                    hovertemplate='Tanggal: %{x|%d-%m-%Y}<br>Transaksi: %{customdata}<extra></extra>',
+                    customdata=df_timeline['Perubahan_Saham'].apply(lambda x: format_lembar(x) + (' (Beli)' if x > 0 else ' (Jual)'))
+                ))
+                
+                # Update layout untuk dual axis + bar
+                fig_deep.update_layout(
+                    title=f"{selected_entity} pada {selected_stock}",
+                    height=600,
+                    hovermode='x unified',
+                    xaxis=dict(
+                        title="Tanggal",
+                        tickformat="%d-%m-%Y"
+                    ),
+                    yaxis=dict(
+                        title="Jumlah Kepemilikan (Lembar)",
+                        titlefont=dict(color='#2E86AB'),
+                        tickfont=dict(color='#2E86AB'),
+                        tickformat=",.0f"
+                    ),
+                    yaxis2=dict(
+                        title="Harga (Rp)",
+                        titlefont=dict(color='#E88873'),
+                        tickfont=dict(color='#E88873'),
+                        tickformat=",.0f",
+                        overlaying='y',
+                        side='right',
+                        position=0.95
+                    ),
+                    yaxis3=dict(
+                        title="Volume Transaksi",
+                        titlefont=dict(color='#7F8C8D'),
+                        tickfont=dict(color='#7F8C8D'),
+                        tickformat=",.0f",
+                        anchor="free",
+                        overlaying="y",
+                        side="right",
+                        position=1.0
+                    ),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="center",
+                        x=0.5
+                    ),
+                    margin=dict(r=150)  # Memberi ruang untuk axis kanan
+                )
+                
+                st.plotly_chart(fig_deep, use_container_width=True)
+                
+                # Tampilkan ringkasan
+                col_metric1, col_metric2, col_metric3, col_metric4 = st.columns(4)
+                
+                with col_metric1:
+                    awal = df_timeline['Kepemilikan'].iloc[0]
+                    akhir = df_timeline['Kepemilikan'].iloc[-1]
+                    perubahan = akhir - awal
+                    st.metric(
+                        "Perubahan Kepemilikan",
+                        format_lembar(perubahan),
+                        delta=f"{((perubahan/awal)*100):.1f}%" if awal > 0 else "N/A"
+                    )
+                
+                with col_metric2:
+                    total_beli = df_timeline[df_timeline['Perubahan_Saham'] > 0]['Perubahan_Saham'].sum()
+                    st.metric("Total Pembelian", format_lembar(total_beli))
+                
+                with col_metric3:
+                    total_jual = df_timeline[df_timeline['Perubahan_Saham'] < 0]['Perubahan_Saham'].sum()
+                    st.metric("Total Penjualan", format_lembar(abs(total_jual)))
+                
+                with col_metric4:
+                    avg_price = df_timeline['Close_Price'].mean()
+                    st.metric("Rata-rata Harga", format_rupiah(avg_price))
+                
+                # Tampilkan data detail
+                with st.expander("📋 Lihat Detail Transaksi"):
+                    df_detail_timeline = df_timeline[['Tanggal_Data', 'Aksi', 'Perubahan_Saham', 
+                                                      'Jumlah Saham (Curr)', 'Close_Price', 'Estimasi_Nilai']].copy()
+                    df_detail_timeline['Perubahan_Saham'] = df_detail_timeline['Perubahan_Saham'].apply(format_lembar)
+                    df_detail_timeline['Jumlah Saham (Curr)'] = df_detail_timeline['Jumlah Saham (Curr)'].apply(format_lembar)
+                    df_detail_timeline['Close_Price'] = df_detail_timeline['Close_Price'].apply(format_rupiah)
+                    df_detail_timeline['Estimasi_Nilai'] = df_detail_timeline['Estimasi_Nilai'].apply(format_rupiah)
+                    
+                    st.dataframe(
+                        df_detail_timeline.sort_values('Tanggal_Data', ascending=False),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+            else:
+                st.info(f"Tidak ada data historis untuk {selected_entity} pada {selected_stock}")
     else:
         st.info("Belum ditemukan akumulasi awal dengan parameter ini. Coba turunkan threshold minimal beli.")
 
