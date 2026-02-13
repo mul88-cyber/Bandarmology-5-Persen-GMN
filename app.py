@@ -4,12 +4,15 @@ import numpy as np
 from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
+from io import StringIO, BytesIO
+import time
 
 # =============================================================================
-# KONFIGURASI: LINK GOOGLE DRIVE (PUBLIC SHARING)
+# KONFIGURASI: LINK GOOGLE DRIVE (PAKAI FORMAT EXPORT)
 # =============================================================================
-# Cara setting: File di GDrive -> Share -> "Anyone with link" -> Copy link ID
-# https://drive.google.com/uc?id=FILE_ID
+# Cara setting: File di GDrive -> Share -> "Anyone with link" -> Copy FILE_ID
+# Gunakan link export CSV untuk hindari virus scan
 
 FILE_IDS = {
     'harian': '1t_wCljhepGBqZVrvleuZKldomQKop9DY',      # Kompilasi_Data_1Tahun
@@ -18,86 +21,162 @@ FILE_IDS = {
 }
 
 # =============================================================================
-# CACHE DATA LOADING (KINERJA + HEMAT BANDWIDTH)
+# FUNGSI LOAD DATA DENGAN RETRY & FALLBACK
 # =============================================================================
-@st.cache_data(ttl=3600)  # Refresh setiap 1 jam
+def load_csv_from_gdrive(file_id, max_retries=3):
+    """
+    Load CSV dari Google Drive dengan multiple fallback method.
+    Mengatasi error 403, 500, dan virus scan warning.
+    """
+    
+    # METHOD 1: Export link format (paling reliable untuk public file)
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    
+    for attempt in range(max_retries):
+        try:
+            # Gunakan session untuk handle cookies
+            session = requests.Session()
+            
+            # Download dengan stream untuk handle large file
+            response = session.get(url, stream=True, timeout=30)
+            
+            # Handle Google Drive virus scan warning
+            if 'Virus scan warning' in response.text or 'Quota exceeded' in response.text:
+                # Extract confirmation token
+                import re
+                match = re.search(r'confirm=([0-9A-Za-z]+)', response.text)
+                if match:
+                    confirm_token = match.group(1)
+                    url = f"https://drive.google.com/uc?export=download&confirm={confirm_token}&id={file_id}"
+                    response = session.get(url, stream=True, timeout=30)
+            
+            response.raise_for_status()
+            
+            # Baca CSV dari response content
+            content = response.content.decode('utf-8')
+            df = pd.read_csv(StringIO(content))
+            
+            print(f"✅ Success loading file ID: {file_id}")
+            return df
+            
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed for ID {file_id}: {e}")
+            
+            # METHOD 2: Direct download link (alternative)
+            if attempt == 1:
+                try:
+                    url = f"https://drive.google.com/uc?id={file_id}&export=download"
+                    response = requests.get(url, timeout=30)
+                    content = response.content.decode('utf-8')
+                    df = pd.read_csv(StringIO(content))
+                    return df
+                except:
+                    pass
+            
+            # METHOD 3: Menggunakan pandas read_csv dengan URL (fallback terakhir)
+            if attempt == 2:
+                try:
+                    url = f"https://drive.google.com/uc?id={file_id}"
+                    df = pd.read_csv(url)
+                    return df
+                except:
+                    pass
+            
+            time.sleep(2)  # Backoff sebelum retry
+    
+    raise Exception(f"Gagal load file ID {file_id} setelah {max_retries} percobaan")
+
+# =============================================================================
+# CACHE DATA LOADING DENGAN ERROR HANDLING
+# =============================================================================
+@st.cache_data(ttl=3600, show_spinner="Loading data harian...")
 def load_harian():
     """Load data harian (Kompilasi_Data_1Tahun)"""
-    url = f"https://drive.google.com/uc?id={FILE_IDS['harian']}"
-    df = pd.read_csv(url)
-    
-    # Parsing tanggal
-    df['Last Trading Date'] = pd.to_datetime(df['Last Trading Date'], errors='coerce')
-    df = df.dropna(subset=['Last Trading Date'])
-    
-    # Konversi numerik
-    numeric_cols = ['Close', 'Volume', 'Value', 'Foreign Buy', 'Foreign Sell', 
-                    'Bid Volume', 'Offer Volume', 'Avg_Order_Volume', 'MA50_AOVol',
-                    'Volume Spike (x)', 'Bid/Offer Imbalance', 'Change %']
-    
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    return df
+    try:
+        df = load_csv_from_gdrive(FILE_IDS['harian'])
+        
+        # Parsing tanggal
+        df['Last Trading Date'] = pd.to_datetime(df['Last Trading Date'], errors='coerce')
+        df = df.dropna(subset=['Last Trading Date'])
+        
+        # Konversi numerik
+        numeric_cols = ['Close', 'Volume', 'Value', 'Foreign Buy', 'Foreign Sell', 
+                        'Bid Volume', 'Offer Volume', 'Avg_Order_Volume', 'MA50_AOVol',
+                        'Volume Spike (x)', 'Bid/Offer Imbalance', 'Change %']
+        
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        return df
+    except Exception as e:
+        st.error(f"❌ Gagal load data harian: {e}")
+        # Return empty dataframe dengan struktur minimal
+        return pd.DataFrame(columns=['Stock Code', 'Last Trading Date', 'Close'])
 
-@st.cache_data(ttl=86400)  # Refresh 24 jam (KSEI bulanan)
+@st.cache_data(ttl=86400, show_spinner="Loading data KSEI...")
 def load_ksei():
-    """Load data KSEI bulanan (sudah diproses)"""
-    url = f"https://drive.google.com/uc?id={FILE_IDS['ksei']}"
-    df = pd.read_csv(url)
-    
-    # Parsing tanggal
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-    df = df.dropna(subset=['Date'])
-    
-    # Konversi numerik untuk kolom perubahan
-    for col in df.columns:
-        if 'Chg' in col or 'Vol' in col or 'Val' in col or col in ['Price', 'Avg_Price']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    return df
+    """Load data KSEI bulanan"""
+    try:
+        df = load_csv_from_gdrive(FILE_IDS['ksei'])
+        
+        # Parsing tanggal
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        df = df.dropna(subset=['Date'])
+        
+        # Konversi numerik
+        for col in df.columns:
+            if 'Chg' in col or 'Vol' in col or 'Val' in col or col in ['Price', 'Avg_Price']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        return df
+    except Exception as e:
+        st.error(f"❌ Gagal load data KSEI: {e}")
+        return pd.DataFrame(columns=['Code', 'Date', 'Top_Buyer', 'Top_Seller'])
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner="Loading data kepemilikan 5%...")
 def load_master_5():
-    """LOAD MASTER DATABASE 5% - SENJATA UTAMA DETEKSI AKUMULASI AWAL"""
-    url = f"https://drive.google.com/uc?id={FILE_IDS['master_5']}"
-    df = pd.read_csv(url)
-    
-    # Parsing tanggal
-    df['Tanggal_Data'] = pd.to_datetime(df['Tanggal_Data'], errors='coerce')
-    df = df.dropna(subset=['Tanggal_Data'])
-    
-    # Konversi numerik
-    df['Jumlah Saham (Prev)'] = pd.to_numeric(df['Jumlah Saham (Prev)'], errors='coerce')
-    df['Jumlah Saham (Curr)'] = pd.to_numeric(df['Jumlah Saham (Curr)'], errors='coerce')
-    df['Close_Price'] = pd.to_numeric(df['Close_Price'], errors='coerce')
-    
-    # Hitung perubahan saham
-    df['Perubahan_Saham'] = df['Jumlah Saham (Curr)'] - df['Jumlah Saham (Prev)']
-    df['Perubahan_Persen'] = (df['Perubahan_Saham'] / df['Jumlah Saham (Prev)']) * 100
-    
-    # Klasifikasi aksi
-    df['Aksi'] = 'Tahan'
-    df.loc[df['Perubahan_Saham'] > 0, 'Aksi'] = 'Beli'
-    df.loc[df['Perubahan_Saham'] < 0, 'Aksi'] = 'Jual'
-    
-    # Estimate nilai transaksi
-    df['Estimasi_Nilai'] = df['Perubahan_Saham'] * df['Close_Price']
-    
-    return df
+    """Load data MASTER_DATABASE_5persen"""
+    try:
+        df = load_csv_from_gdrive(FILE_IDS['master_5'])
+        
+        # Parsing tanggal
+        df['Tanggal_Data'] = pd.to_datetime(df['Tanggal_Data'], errors='coerce')
+        df = df.dropna(subset=['Tanggal_Data'])
+        
+        # Konversi numerik
+        df['Jumlah Saham (Prev)'] = pd.to_numeric(df['Jumlah Saham (Prev)'], errors='coerce')
+        df['Jumlah Saham (Curr)'] = pd.to_numeric(df['Jumlah Saham (Curr)'], errors='coerce')
+        df['Close_Price'] = pd.to_numeric(df['Close_Price'], errors='coerce')
+        
+        # Hitung perubahan
+        df['Perubahan_Saham'] = df['Jumlah Saham (Curr)'] - df['Jumlah Saham (Prev)']
+        df['Perubahan_Persen'] = (df['Perubahan_Saham'] / df['Jumlah Saham (Prev)'].replace(0, np.nan)) * 100
+        
+        # Klasifikasi aksi
+        df['Aksi'] = 'Tahan'
+        df.loc[df['Perubahan_Saham'] > 0, 'Aksi'] = 'Beli'
+        df.loc[df['Perubahan_Saham'] < 0, 'Aksi'] = 'Jual'
+        
+        # Estimasi nilai transaksi
+        df['Estimasi_Nilai'] = df['Perubahan_Saham'] * df['Close_Price']
+        
+        return df
+    except Exception as e:
+        st.error(f"❌ Gagal load data master 5%: {e}")
+        return pd.DataFrame(columns=['Kode Efek', 'Tanggal_Data', 'Nama Pemegang Saham'])
 
 # =============================================================================
-# FORMATTER ANGKA (SUPAYA ENAK DIBACA)
+# FORMATTER ANGKA
 # =============================================================================
 def format_rupiah(angka):
-    """Format angka ke Rupiah dengan separator koma"""
+    """Format angka ke Rupiah dengan separator titik"""
     if pd.isna(angka) or angka == 0:
         return "Rp 0"
     return f"Rp {angka:,.0f}".replace(",", ".")
 
 def format_lembar(angka):
-    """Format lembar saham dengan separator koma"""
+    """Format lembar saham dengan separator titik"""
     if pd.isna(angka) or angka == 0:
         return "0"
     return f"{angka:,.0f}".replace(",", ".")
@@ -107,8 +186,6 @@ def format_persen(angka):
     if pd.isna(angka):
         return "0.00%"
     return f"{angka:.2f}%"
-    
-
 
 # =============================================================================
 # KONFIGURASI HALAMAN (WAJIB PALING ATAS)
