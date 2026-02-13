@@ -652,11 +652,11 @@ with tab3:
             fig.update_xaxes(tickformat=",.0f")
             st.plotly_chart(fig, use_container_width=True)
             
-            # =========================================================================
-            # DEEP DIVE: MULTI-LINE CHART PER UBO
-            # =========================================================================
-            st.subheader("📈 DEEP DIVE: Perbandingan Akumulasi per UBO")
-            st.caption("**Multi-line chart**: Setiap Ultimate Beneficial Owner (UBO) adalah 1 garis.")
+            # =============================================================================
+            # DEEP DIVE: MULTI-LINE CHART PER UBO + HARGA (SECONDARY AXIS)
+            # =============================================================================
+            st.subheader("📈 DEEP DIVE: Perbandingan Akumulasi per UBO + Harga")
+            st.caption("**Multi-line chart**: Setiap Ultimate Beneficial Owner (UBO) adalah 1 garis. Garis merah putus-putus = Harga (secondary axis)")
             
             col_a, col_b, col_c = st.columns([2, 1, 1])
             
@@ -683,22 +683,24 @@ with tab3:
                 )
             
             # Frekuensi resample
-            if weekly_option == "Weekly":
-                freq = 'W'
-            elif weekly_option == "Bi-Weekly":
-                freq = '2W'
-            else:
-                freq = 'ME'
+            freq_map = {"Weekly": "W", "Bi-Weekly": "2W", "Monthly": "ME"}
+            freq = freq_map[weekly_option]
             
             if selected_stock_dd:
+                # ============= DATA KEPEMILIKAN =============
                 df_all_ubo = df_master_filtered[
                     df_master_filtered['Kode Efek'] == selected_stock_dd
                 ].copy()
                 
-                if not df_all_ubo.empty:
+                # ============= DATA HARGA =============
+                df_harga = df_harian[
+                    df_harian['Stock Code'] == selected_stock_dd
+                ].sort_values('Last Trading Date').copy()
+                
+                if not df_all_ubo.empty and not df_harga.empty:
+                    # Filter UBO
                     all_ubos = df_all_ubo['UBO'].unique()
                     
-                    # Terapkan filter
                     if ubo_filter == "Hanya Adaro Group":
                         all_ubos = [u for u in all_ubos if 'ADARO' in str(u).upper()]
                     elif ubo_filter == "Hanya LKH":
@@ -713,100 +715,195 @@ with tab3:
                     else:
                         st.info(f"Menampilkan {len(all_ubos)} Ultimate Beneficial Owner")
                         
-                        # BUAT MULTI-LINE CHART
-                        fig_multi = go.Figure()
+                        # ============= BUAT FIGURE DUAL AXIS =============
+                        fig_deep = go.Figure()
+                        
+                        # --- SET 1: LINE CHART KEPEMILIKAN (Primary Axis - Kiri) ---
                         colors = px.colors.qualitative.Plotly + px.colors.qualitative.Alphabet * 5
                         
-                        for idx, ubo in enumerate(all_ubos[:15]):  # Maks 15 UBO agar tidak terlalu padat
+                        for idx, ubo in enumerate(all_ubos[:10]):  # Maks 10 UBO agar tidak terlalu padat
                             df_ubo = df_all_ubo[df_all_ubo['UBO'] == ubo].sort_values('Tanggal_Data')
                             
                             if len(df_ubo) >= 2:
+                                # Resample ke weekly
                                 df_ubo.set_index('Tanggal_Data', inplace=True)
                                 df_ubo_weekly = df_ubo.resample(freq).last().dropna(subset=['Jumlah Saham (Curr)']).reset_index()
                                 df_ubo.reset_index(inplace=True)
                                 
                                 label = ubo[:20] + '...' if len(ubo) > 20 else ubo
                                 
-                                fig_multi.add_trace(go.Scatter(
+                                fig_deep.add_trace(go.Scatter(
                                     x=df_ubo_weekly['Tanggal_Data'],
                                     y=df_ubo_weekly['Jumlah Saham (Curr)'],
                                     mode='lines+markers',
                                     name=label,
                                     line=dict(color=colors[idx % len(colors)], width=2.5),
                                     marker=dict(size=6),
+                                    yaxis='y',  # Primary axis (kiri)
                                     hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
-                                                 f'UBO: {ubo}<br>' +
+                                                 f'<span style="color:{colors[idx % len(colors)]}">●</span> {ubo}<br>' +
                                                  'Kepemilikan: %{customdata}<extra></extra>',
                                     customdata=df_ubo_weekly['Jumlah Saham (Curr)'].apply(format_lembar)
                                 ))
                         
-                        fig_multi.update_layout(
-                            title=f"Tren Kepemilikan - {selected_stock_dd}",
-                            height=550,
+                        # --- SET 2: LINE CHART HARGA (Secondary Axis - Kanan) ---
+                        df_harga.set_index('Last Trading Date', inplace=True)
+                        df_harga_weekly = df_harga.resample(freq).last().dropna(subset=['Close']).reset_index()
+                        df_harga.reset_index(inplace=True)
+                        
+                        fig_deep.add_trace(go.Scatter(
+                            x=df_harga_weekly['Last Trading Date'],
+                            y=df_harga_weekly['Close'],
+                            mode='lines+markers',
+                            name='💲 HARGA CLOSE',
+                            line=dict(color='#E74C3C', width=3, dash='dot'),
+                            marker=dict(size=8, symbol='diamond', color='#E74C3C'),
+                            yaxis='y2',  # Secondary axis (kanan)
+                            hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
+                                         '<span style="color:#E74C3C">💲</span> Harga: %{customdata}<extra></extra>',
+                            customdata=df_harga_weekly['Close'].apply(format_rupiah)
+                        ))
+                        
+                        # --- SET 3: VOLUME SPIKE (Marker di Harga) ---
+                        if 'Volume Spike (x)' in df_harga_weekly.columns:
+                            df_harga_weekly['Volume Spike (x)'] = pd.to_numeric(df_harga_weekly['Volume Spike (x)'], errors='coerce')
+                            spike = df_harga_weekly[df_harga_weekly['Volume Spike (x)'] > 1.5]
+                            if not spike.empty:
+                                fig_deep.add_trace(go.Scatter(
+                                    x=spike['Last Trading Date'],
+                                    y=spike['Close'],
+                                    mode='markers',
+                                    name='⚡ Volume Spike',
+                                    marker=dict(color='#F39C12', size=12, symbol='star'),
+                                    yaxis='y2',
+                                    hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
+                                                 '<span style="color:#F39C12">⚡</span> Volume Spike: %{customdata:.1f}x<extra></extra>',
+                                    customdata=spike['Volume Spike (x)']
+                                ))
+                        
+                        # ============= UPDATE LAYOUT DUAL AXIS =============
+                        fig_deep.update_layout(
+                            title=f"<b>AKUMULASI vs HARGA</b> - {selected_stock_dd}",
+                            height=600,
                             hovermode='x unified',
                             legend=dict(
                                 orientation="h",
                                 yanchor="bottom",
-                                y=-0.4,
+                                y=-0.35,
                                 xanchor="center",
                                 x=0.5,
-                                font=dict(size=10)
+                                font=dict(size=11),
+                                itemsizing='constant'
                             ),
+                            # Primary Axis (Kiri) - Kepemilikan
                             yaxis=dict(
-                                title="Jumlah Saham (Lembar)",
+                                title=dict(
+                                    text="Jumlah Saham (Lembar)",
+                                    font=dict(color='#2C3E50', size=13)
+                                ),
                                 tickformat=",.0f",
-                                gridcolor='lightgray'
+                                gridcolor='lightgray',
+                                showgrid=True,
+                                color='#2C3E50'
+                            ),
+                            # Secondary Axis (Kanan) - Harga
+                            yaxis2=dict(
+                                title=dict(
+                                    text="Harga (Rp)",
+                                    font=dict(color='#E74C3C', size=13)
+                                ),
+                                tickformat=",.0f",
+                                overlaying='y',
+                                side='right',
+                                showgrid=False,
+                                color='#E74C3C'
                             ),
                             xaxis=dict(
                                 title="Tanggal",
-                                tickformat="%d-%m-%Y"
+                                tickformat="%d-%m-%Y",
+                                gridcolor='lightgray'
                             ),
-                            margin=dict(b=150)
+                            plot_bgcolor='white',
+                            paper_bgcolor='white',
+                            margin=dict(l=80, r=80, t=80, b=120)
                         )
                         
-                        st.plotly_chart(fig_multi, use_container_width=True)
+                        # Tambahkan range slider untuk zoom temporal
+                        fig_deep.update_xaxes(rangeslider_visible=True, rangeslider_thickness=0.08)
                         
-                        # =================================================================
-                        # CHART HARGA
-                        # =================================================================
-                        st.subheader(f"📈 Pergerakan Harga - {selected_stock_dd}")
+                        st.plotly_chart(fig_deep, use_container_width=True)
                         
-                        df_harga = df_harian[
-                            df_harian['Stock Code'] == selected_stock_dd
-                        ].sort_values('Last Trading Date').copy()
+                        # ============= METRIK RINGKASAN =============
+                        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
                         
-                        if not df_harga.empty:
-                            df_harga.set_index('Last Trading Date', inplace=True)
-                            df_harga_weekly = df_harga.resample(freq).last().dropna(subset=['Close']).reset_index()
-                            df_harga.reset_index(inplace=True)
-                            
-                            fig_price = go.Figure()
-                            
-                            fig_price.add_trace(go.Scatter(
-                                x=df_harga_weekly['Last Trading Date'],
-                                y=df_harga_weekly['Close'],
-                                mode='lines+markers',
-                                name='Harga Close',
-                                line=dict(color='#E74C3C', width=3),
-                                marker=dict(size=8),
-                                hovertemplate='<b>%{x|%d-%m-%Y}</b><br>Harga: %{customdata}<extra></extra>',
-                                customdata=df_harga_weekly['Close'].apply(format_rupiah)
-                            ))
-                            
-                            fig_price.update_layout(
-                                title=f"Pergerakan Harga - {selected_stock_dd}",
-                                height=350,
-                                hovermode='x unified',
-                                yaxis=dict(title="Harga (Rp)", tickformat=",.0f"),
-                                xaxis=dict(title="Tanggal", tickformat="%d-%m-%Y")
+                        with col_m1:
+                            # Harga terakhir
+                            last_price = df_harga['Close'].iloc[-1] if not df_harga.empty else 0
+                            prev_price = df_harga['Close'].iloc[-2] if len(df_harga) > 1 else last_price
+                            delta_price = ((last_price - prev_price) / prev_price * 100) if prev_price > 0 else 0
+                            st.metric(
+                                "Harga Terkini",
+                                format_rupiah(last_price),
+                                delta=f"{delta_price:.1f}%",
+                                delta_color="normal"
                             )
-                            st.plotly_chart(fig_price, use_container_width=True)
-                        else:
-                            st.warning(f"Data harga tidak ditemukan")
-        else:
-            st.info("Tidak ada akumulasi awal dengan kriteria tersebut.")
-    else:
-        st.info("Tidak ada transaksi BELI dengan kriteria tersebut.")
+                        
+                        with col_m2:
+                            # Total UBO aktif
+                            st.metric("UBO Aktif", len(all_ubos))
+                        
+                        with col_m3:
+                            # Total volume spike (30 hari terakhir)
+                            if 'Volume Spike (x)' in df_harga.columns:
+                                spike_30d = df_harga[
+                                    (df_harga['Last Trading Date'] >= pd.to_datetime(end_date) - timedelta(days=30)) &
+                                    (df_harga['Volume Spike (x)'] > 1.5)
+                                ].shape[0]
+                                st.metric("Volume Spike (30d)", spike_30d)
+                            else:
+                                st.metric("Volume Spike (30d)", 0)
+                        
+                        with col_m4:
+                            # Rata-rata harga 20 hari
+                            ma20 = df_harga['Close'].tail(20).mean()
+                            st.metric("MA20", format_rupiah(ma20))
+                        
+                        # ============= TABEL RINGKASAN PER UBO =============
+                        with st.expander("📋 Lihat Ringkasan Aktivitas per Ultimate Beneficial Owner"):
+                            summary_data = []
+                            for ubo in all_ubos[:10]:  # Top 10 UBO
+                                df_ubo_sum = df_all_ubo[df_all_ubo['UBO'] == ubo].sort_values('Tanggal_Data')
+                                
+                                if not df_ubo_sum.empty:
+                                    first_date = df_ubo_sum['Tanggal_Data'].iloc[0]
+                                    last_date = df_ubo_sum['Tanggal_Data'].iloc[-1]
+                                    first_hold = df_ubo_sum['Jumlah Saham (Curr)'].iloc[0]
+                                    last_hold = df_ubo_sum['Jumlah Saham (Curr)'].iloc[-1]
+                                    change = last_hold - first_hold
+                                    change_pct = (change / first_hold * 100) if first_hold > 0 else 0
+                                    
+                                    total_beli = df_ubo_sum[df_ubo_sum['Perubahan_Saham'] > 0]['Perubahan_Saham'].sum()
+                                    total_jual = abs(df_ubo_sum[df_ubo_sum['Perubahan_Saham'] < 0]['Perubahan_Saham'].sum())
+                                    frekuensi = len(df_ubo_sum)
+                                    jml_rekening = df_ubo_sum['Rekening_Bersih'].nunique() if 'Rekening_Bersih' in df_ubo_sum.columns else 1
+                                    
+                                    summary_data.append({
+                                        'UBO': ubo[:30] + '...' if len(ubo) > 30 else ubo,
+                                        'Jml Rekening': jml_rekening,
+                                        'Periode': f"{first_date.strftime('%d/%m/%y')} - {last_date.strftime('%d/%m/%y')}",
+                                        'Kepemilikan Awal': format_lembar(first_hold),
+                                        'Kepemilikan Akhir': format_lembar(last_hold),
+                                        'Perubahan': format_lembar(change),
+                                        'Δ %': f"{change_pct:+.1f}%",
+                                        'Total Beli': format_lembar(total_beli),
+                                        'Total Jual': format_lembar(total_jual),
+                                        'Frekuensi': frekuensi
+                                    })
+                            
+                            df_summary = pd.DataFrame(summary_data)
+                            st.dataframe(df_summary, use_container_width=True, hide_index=True)
+                else:
+                    st.warning(f"Tidak ada data kepemilikan atau harga untuk {selected_stock_dd}")
 
 # =============================================================================
 # TAB 4: WATCHLIST & KONVERGENSI SINYAL
