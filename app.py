@@ -674,7 +674,7 @@ def load_master_5():
         
         # Estimasi nilai transaksi
         df['Estimasi_Nilai'] = df['Perubahan_Saham'] * df['Close_Price']
-        
+        df = clean_master_5_dataframe(df)
         return df
     except Exception as e:
         st.error(f"❌ Gagal load data master 5%: {e}")
@@ -955,409 +955,692 @@ with tab2:
             st.warning(f"Data tidak ditemukan untuk {kode_saham}")
 
 # =============================================================================
-# TAB 3: AKUMULASI AWAL DARI DATA 5% (DENGAN LINE CHART DEEP DIVE)
+# TAB 3: AKUMULASI AWAL DARI DATA 5% (DENGAN CLUSTERING & UBO DETECTION)
 # =============================================================================
 with tab3:
     st.header("🕵️ DETEKSI AKUMULASI AWAL (Data 5%)")
     st.markdown("""
     > **Filosofi Bandarmology**: Sebelum volume spike, sebelum AOVol anomaly, sebelum berita keluar, 
     > **bandar sejati mulai masuk melalui entitas >5%**. Ini adalah jejak paling awal.
+    >
+    > **System Clustering**: Nama rekening dibersihkan & dikelompokkan per **Ultimate Beneficial Owner (UBO)**.
+    > *PT ADARO STRATEGIC INVESTMENTS*, *U20B2S3 A90G4...*, *ADARO STRATEGIC INVESTMENTS PT* → **ADARO STRATEGIC INVESTMENTS** ✅
     """)
     
-    # Filter data master 5%
+    # =========================================================================
+    # 🧹 MODUL PEMBERSIHAN DATA & CLUSTERING (LOCAL - HANYA UNTUK TAB 3)
+    # =========================================================================
+    import re
+    from difflib import SequenceMatcher
+    
+    # Kamus Utama Clustering
+    CANONICAL_OWNER_MAP = {
+        # ADARO GROUP - SATU KELUARGA BESAR
+        'ADARO STRATEGIC INVESTMENTS': 'ADARO STRATEGIC INVESTMENTS',
+        'PT ADARO STRATEGIC INVESTMENTS': 'ADARO STRATEGIC INVESTMENTS',
+        'ADARO STRATEGIC INVESTMENTS PT': 'ADARO STRATEGIC INVESTMENTS',
+        'U20B2S3 A90G4 S11G8 BRANCH TR AC CL PT ADARO STRA IN': 'ADARO STRATEGIC INVESTMENTS',
+        'UINBVS - 2A0G2 3S9G0 4B1R2A0NCH TRUST A/C PT ADARO STRATEGIC': 'ADARO STRATEGIC INVESTMENTS',
+        'DINBVSE BSATMNKE NLTTSD (SSG-2 S25/A9 1P2T) ADARO STRATEGIC': 'ADARO STRATEGIC INVESTMENTS',
+        'JPMCB NA RE-PT ADARO STRATEGIC INVESTMENTS': 'ADARO STRATEGIC INVESTMENTS',
+        'CITIBANK HONG KONG S/A CPB SG A/C PT ADARO STRATEGIC INVESTMENTS': 'ADARO STRATEGIC INVESTMENTS',
+        'UINBVSE ASGTM SEPNOTRSE - 2S0/A91 P1T4 5A2D0A0RO STRATEGIC': 'ADARO STRATEGIC INVESTMENTS',
+        'ADARO ENERGY INDONESIA TBK.': 'ADARO STRATEGIC INVESTMENTS',
+        'ADARO ENERGY INDONESIA TBK, PT': 'ADARO STRATEGIC INVESTMENTS',
+        'PT ADARO ENERGY TBK': 'ADARO STRATEGIC INVESTMENTS',
+        
+        # LO KHENG HONG - LEGEND
+        'LO KHENG HONG': 'LO KHENG HONG',
+        'DRS LO KHENG HONG': 'LO KHENG HONG',
+        'DRS. LO KHENG HONG': 'LO KHENG HONG',
+        'Lo Kheng Hong, Drs.': 'LO KHENG HONG',
+        'LO KHENG HONG DRS': 'LO KHENG HONG',
+        'LO KHENG HONG, DRS': 'LO KHENG HONG',
+        'LO KHENG HONG. DRS': 'LO KHENG HONG',
+        
+        # SARATOGA GROUP
+        'SARATOGA INVESTAMA SEDAYA TBK': 'SARATOGA INVESTAMA SEDAYA',
+        'Saratoga Investama Sedaya,PT': 'SARATOGA INVESTAMA SEDAYA',
+        'PT Saratoga Investama Sedaya Tbk': 'SARATOGA INVESTAMA SEDAYA',
+        'SARATOGA INVESTAMA SEDAYA, PT': 'SARATOGA INVESTAMA SEDAYA',
+        'SARATOGA INVESTAMA SEDAYA TBK, PT': 'SARATOGA INVESTAMA SEDAYA',
+        'PT SARATOGA INVESTAMA SEDAYA TBK': 'SARATOGA INVESTAMA SEDAYA',
+        
+        # GARIBALDI THOHIR
+        'GARIBALDI THOHIR': 'GARIBALDI THOHIR',
+        'Garibaldi Thohir': 'GARIBALDI THOHIR',
+        
+        # BANK DANAMON
+        'BANK DANAMON INDONESIA TBK': 'BANK DANAMON INDONESIA',
+        'PT. Bank Danamon Indonesia': 'BANK DANAMON INDONESIA',
+        'Bank Danamon Indonesia Tbk, PT': 'BANK DANAMON INDONESIA',
+        'BANK DANAMON INDONESIA Tbk, PT - REGISTRAR': 'BANK DANAMON INDONESIA',
+        'PT BANK DANAMON INDONESIA TBK': 'BANK DANAMON INDONESIA',
+        
+        # GOVERNMENT OF SINGAPORE
+        'GOVERNMENT OF SINGAPORE': 'GOVERNMENT OF SINGAPORE (GIC)',
+        'CITIBANK SINGAPORE S/A GOVERNMENT OF SINGAPORE': 'GOVERNMENT OF SINGAPORE (GIC)',
+        
+        # INDONESIA INVESTMENT AUTHORITY
+        'INDONESIA INVESTMENT AUTHORITY': 'INDONESIA INVESTMENT AUTHORITY (INA)',
+        'Indonesia Investment Authority': 'INDONESIA INVESTMENT AUTHORITY (INA)',
+        
+        # VALE
+        'VALE CANADA LIMITED': 'VALE',
+        'PT VALE INDONESIA TBK': 'VALE',
+        
+        # SUMITOMO
+        'SUMITOMO METAL MINING CO.,LTD.': 'SUMITOMO',
+        'SUMITOMO CORPORATION': 'SUMITOMO',
+        
+        # MITSUI
+        'MITSUI & CO., LTD.': 'MITSUI',
+        'MITSUI + CO., LTD.': 'MITSUI',
+        
+        # NIPPON STEEL
+        'NIPPON STEEL CORPORATION': 'NIPPON STEEL',
+        'NIPPON STEEL TRADING CORPORATION': 'NIPPON STEEL',
+        
+        # ASTRA
+        'PT ASTRA INTERNATIONAL TBK': 'ASTRA INTERNATIONAL',
+        'ASTRA INTERNATIONAL TBK': 'ASTRA INTERNATIONAL',
+        
+        # FIDELITY
+        'FIDELITY FUNDS': 'FIDELITY INTERNATIONAL',
+        'FIDELITY FD SICAV': 'FIDELITY INTERNATIONAL',
+        
+        # SANDIAGA UNO
+        'SANDIAGA SALAHUDDIN UNO': 'SANDIAGA UNO',
+        'Sandiaga Salahuddin Uno': 'SANDIAGA UNO',
+        
+        # PRAJOGO PANGESTU
+        'PRAJOGO PANGESTU': 'PRAJOGO PANGESTU',
+        'Prajogo Pangestu': 'PRAJOGO PANGESTU',
+        
+        # ANTHONI SALIM
+        'ANTHONI SALIM': 'ANTHONI SALIM',
+        'Anthoni Salim': 'ANTHONI SALIM',
+        
+        # BUDI HARTONO / DHARMA GROUP
+        'BUDI HARTONO': 'BUDI HARTONO (DHARMA)',
+        'BUDHI HARTONO': 'BUDI HARTONO (DHARMA)',
+        'BUDHI MOELJONO': 'BUDI HARTONO (DHARMA)',
+        'BUDHI SANTOSO': 'BUDI HARTONO (DHARMA)',
+        'BUDHI BERSAUDARA MANUNGGAL': 'BUDI HARTONO (DHARMA)',
+        
+        # LOW TUCK KWONG
+        'LOW TUCK KWONG': 'LOW TUCK KWONG',
+        'Low Tuck Kwong': 'LOW TUCK KWONG',
+        
+        # TANDEAN RUSTANDY
+        'TANDEAN RUSTANDY': 'TANDEAN RUSTANDY',
+        'Tandean Rustandy': 'TANDEAN RUSTANDY',
+    }
+    
+    # Pola Noise
+    NOISE_PATTERNS = [
+        r'U20B2S3.*? -', r'U20B9S1.*? -', r'UINBVS.*? -', r'DINBVSE.*? -',
+        r'JPMCB NA RE-', r'HPTS.*? -', r'CITIBANK.*? -', r'DB AG SG.*? -',
+        r'DB SG.*? -', r'BOS LTD S/A.*? -', r'UBS AG.*? -', r'BNYM RE.*? -',
+        r'BP2S.*? -', r'SCB SG.*? -', r'HSBC.*? -', r'MAYBANK.*? -',
+        r'STANDARD CHARTERED.*? -', r'RAIFFEISEN.*? -', r'OCBC.*? -',
+        r'CGS.*? -', r'NOMURA.*? -', r'MORGAN STANLEY.*? -', r'UOB KAY HIAN.*? -',
+        r'DBS.*? -', r'BANK OF SINGAPORE.*? -', r'BANK JULIUS.*? -',
+        r'EFG BANK.*? -', r'BANQUE PICTET.*? -', r'BNP PARIBAS.*? -',
+        r' - .*', r' \/ .*', r' A\/C .*', r' S\/A .*', r' CLT.*', r' SES.*',
+        r' WM CLT.*', r' BRANCH.*', r' TRUST.*', r' TR AC.*', r' A\/C.*',
+        r' S\/A.*', r'\(.*\)', r'  ', r'--.*', r'---.*', r'^\s+|\s+$',
+        r'[0-9]{6,}', r'[0-9]+$', r' -[0-9]+', r'-[0-9]{6,}',
+        r'ID[0-9]+', r'CPF[0-9]+', r'NOSID[0-9]+',
+    ]
+    
+    def clean_entity_name(raw_name):
+        """Bersihkan nama entitas dan cluster ke nama kanonikal"""
+        if pd.isna(raw_name) or not isinstance(raw_name, str):
+            return raw_name
+        
+        raw_upper = raw_name.strip().upper()
+        
+        # Direct match
+        if raw_upper in CANONICAL_OWNER_MAP:
+            return CANONICAL_OWNER_MAP[raw_upper]
+        
+        # Partial match
+        for key, value in CANONICAL_OWNER_MAP.items():
+            if key in raw_upper or raw_upper in key:
+                return value
+        
+        # Hapus noise
+        cleaned = raw_name
+        for pattern in NOISE_PATTERNS:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Normalisasi
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = re.sub(r'\s*,\s*', ', ', cleaned)
+        
+        # Hapus PT di depan/belakang (kecuali khusus)
+        if cleaned.upper().startswith('PT ') and not any(x in cleaned.upper() for x in ['PT ADARO', 'PT BANK', 'PT ASURANSI', 'PT SARATOGA']):
+            cleaned = cleaned[3:].strip()
+        if cleaned.upper().endswith(' PT'):
+            cleaned = cleaned[:-3].strip()
+        if cleaned.upper().endswith(', PT'):
+            cleaned = cleaned[:-4].strip()
+        
+        cleaned = cleaned.strip()
+        
+        if len(cleaned) < 3:
+            return raw_name[:50].strip()
+        return cleaned
+    
+    def detect_ubo(account_name, owner_name):
+        """Deteksi Ultimate Beneficial Owner"""
+        combined = f"{account_name} {owner_name}".upper()
+        
+        if 'ADARO' in combined or 'GARIBALDI' in combined or 'THOHIR' in combined:
+            return 'ADARO STRATEGIC INVESTMENTS'
+        elif 'LO KHENG HONG' in combined:
+            return 'LO KHENG HONG'
+        elif 'SARATOGA' in combined or 'EDWIN SOERYADJAYA' in combined or 'SANDIAGA' in combined:
+            return 'SARATOGA INVESTAMA SEDAYA'
+        elif 'BUDI HARTONO' in combined or 'BUDHI' in combined:
+            return 'BUDI HARTONO (DHARMA)'
+        elif 'ANTHONI SALIM' in combined:
+            return 'ANTHONI SALIM'
+        elif 'PRAJOGO PANGESTU' in combined:
+            return 'PRAJOGO PANGESTU'
+        elif 'LOW TUCK KWONG' in combined:
+            return 'LOW TUCK KWONG'
+        elif 'TANDEAN RUSTANDY' in combined:
+            return 'TANDEAN RUSTANDY'
+        elif 'GOVERNMENT OF SINGAPORE' in combined or 'GIC' in combined:
+            return 'GOVERNMENT OF SINGAPORE (GIC)'
+        elif 'INDONESIA INVESTMENT AUTHORITY' in combined or 'INA' in combined:
+            return 'INDONESIA INVESTMENT AUTHORITY (INA)'
+        elif 'FIDELITY' in combined:
+            return 'FIDELITY INTERNATIONAL'
+        elif 'VALE' in combined:
+            return 'VALE'
+        elif 'SUMITOMO' in combined:
+            return 'SUMITOMO'
+        elif 'MITSUI' in combined:
+            return 'MITSUI'
+        elif 'NIPPON STEEL' in combined:
+            return 'NIPPON STEEL'
+        elif 'ASTRA' in combined:
+            return 'ASTRA INTERNATIONAL'
+        elif 'BANK DANAMON' in combined:
+            return 'BANK DANAMON INDONESIA'
+        elif 'UOB KAY HIAN' in combined or 'DBS' in combined or 'OCBC' in combined or 'CGS' in combined:
+            return 'NOMINEE (SINGAPORE)'
+        elif 'HSBC' in combined or 'STANDARD CHARTERED' in combined or 'MAYBANK' in combined:
+            return 'NOMINEE (INTERNATIONAL)'
+        
+        # Fallback ke pemegang saham atau rekening
+        if isinstance(owner_name, str) and len(owner_name) > 3 and owner_name not in ['-', '--']:
+            return clean_entity_name(owner_name)
+        elif isinstance(account_name, str) and len(account_name) > 3:
+            return clean_entity_name(account_name)
+        else:
+            return 'UNKNOWN'
+    
+    # =========================================================================
+    # FILTER & PREPARE DATA MASTER 5%
+    # =========================================================================
+    
+    # Filter tanggal
     df_master_filtered = df_master[
         (df_master['Tanggal_Data'] >= pd.to_datetime(start_date)) &
         (df_master['Tanggal_Data'] <= pd.to_datetime(end_date))
     ].copy()
     
-    if selected_sectors:
-        # Join dengan data harian untuk ambil sektor
-        sector_map = df_harian[['Stock Code', 'Sector']].drop_duplicates('Stock Code')
-        df_master_filtered = df_master_filtered.merge(sector_map, left_on='Kode Efek', right_on='Stock Code', how='left')
-        df_master_filtered = df_master_filtered[df_master_filtered['Sector'].isin(selected_sectors)]
-    
-    # PARAMETER DETEKSI AKUMULASI AWAL
-    st.subheader("⚙️ Parameter Akumulasi Awal")
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        min_beli = st.number_input("Minimal Beli (lembar)", min_value=1000, value=100000, step=10000, 
-                                   help="Filter pembelian minimal", format="%d")
-    with col2:
-        max_saham_beredar = st.number_input("Maksimal Kepemilikan (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.5, 
-                                           help="Batas atas % kepemilikan (bandar awal < 10%)")
-    with col3:
-        lookback_days = st.number_input("Lookback (hari)", min_value=7, max_value=90, value=30, 
-                                       help="Dalam X hari terakhir")
-    
-    # 1. Filter: Aksi BELI dan jumlah beli >= minimal
-    df_beli = df_master_filtered[
-        (df_master_filtered['Aksi'] == 'Beli') &
-        (df_master_filtered['Perubahan_Saham'] >= min_beli)
-    ].copy()
-    
-    # 2. Hitung tanggal pertama kali beli dalam lookback
-    cutoff_date = pd.to_datetime(end_date) - timedelta(days=lookback_days)
-    df_beli = df_beli[df_beli['Tanggal_Data'] >= cutoff_date]
-    
-    # 3. Kelompokkan berdasarkan (Kode Efek, Nama Pemegang Saham) untuk lihat akumulasi total
-    df_akumulasi = df_beli.groupby(
-        ['Kode Efek', 'Nama Pemegang Saham', 'Nama Pemegang Rekening Efek']
-    ).agg({
-        'Perubahan_Saham': 'sum',
-        'Estimasi_Nilai': 'sum',
-        'Tanggal_Data': ['first', 'last', 'count']
-    }).reset_index()
-    
-    # Flatten column names
-    df_akumulasi.columns = ['Kode Efek', 'Nama Pemegang Saham', 'Nama Rekening', 
-                            'Total_Beli_Lembar', 'Total_Nilai_Rp', 
-                            'Tgl_Pertama', 'Tgl_Terakhir', 'Frekuensi_Transaksi']
-    
-    # 4. Skor Akumulasi Awal
-    df_akumulasi['Skor_Akumulasi'] = (
-        np.log1p(df_akumulasi['Total_Beli_Lembar']) * 0.5 +
-        np.log1p(df_akumulasi['Frekuensi_Transaksi']) * 0.3 +
-        (1 - (df_akumulasi['Tgl_Terakhir'] - df_akumulasi['Tgl_Pertama']).dt.days / lookback_days) * 0.2
-    )
-    
-    df_akumulasi = df_akumulasi.sort_values('Skor_Akumulasi', ascending=False)
-    
-    # TAMPILKAN HASIL DENGAN FORMAT RIBUAN
-    st.subheader(f"🎯 {len(df_akumulasi)} Entitas dengan Indikasi Akumulasi Awal")
-    st.caption("Semakin tinggi Skor = Semakin agresif akumulasi dalam waktu singkat")
-    
-    if not df_akumulasi.empty:
-        # Merge dengan sektor
-        df_akumulasi = df_akumulasi.merge(
-            df_harian[['Stock Code', 'Sector']].drop_duplicates('Stock Code'),
-            left_on='Kode Efek',
-            right_on='Stock Code',
-            how='left'
-        )
-        
-        # Buat versi display dengan format yang sudah diformat
-        df_display = df_akumulasi.copy()
-        df_display['Total_Beli_Lembar_Display'] = df_display['Total_Beli_Lembar'].apply(format_lembar)
-        df_display['Total_Nilai_Rp_Display'] = df_display['Total_Nilai_Rp'].apply(format_rupiah)
-        df_display['Skor_Display'] = df_display['Skor_Akumulasi'].apply(lambda x: f"{x:.2f}")
-        
-        st.dataframe(
-            df_display[['Kode Efek', 'Nama Pemegang Saham', 'Sector',
-                       'Total_Beli_Lembar_Display', 'Total_Nilai_Rp_Display', 
-                       'Frekuensi_Transaksi', 'Tgl_Pertama', 'Tgl_Terakhir', 'Skor_Display']].head(50),
-            column_config={
-                'Total_Beli_Lembar_Display': st.column_config.TextColumn("Total Beli (Lembar)"),
-                'Total_Nilai_Rp_Display': st.column_config.TextColumn("Estimasi Nilai"),
-                'Frekuensi_Transaksi': st.column_config.NumberColumn(format="%d"),
-                'Tgl_Pertama': st.column_config.DateColumn(format="DD-MM-YY"),
-                'Tgl_Terakhir': st.column_config.DateColumn(format="DD-MM-YY"),
-                'Skor_Display': st.column_config.TextColumn("Skor")
-            },
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Chart: Top 10 akumulator
-        st.subheader("💰 Top 10 Entitas Akumulator Terbesar (Nilai Rp)")
-        top10 = df_akumulasi.nlargest(10, 'Total_Nilai_Rp').copy()
-        top10['Label'] = top10['Nama Pemegang Saham'].str[:30] + '...'
-        top10['Nilai_Display'] = top10['Total_Nilai_Rp'].apply(format_rupiah)
-        
-        fig = px.bar(
-            top10,
-            x='Total_Nilai_Rp',
-            y='Label',
-            color='Sector',
-            orientation='h',
-            title="Total Nilai Pembelian (Estimasi)",
-            labels={'Total_Nilai_Rp': 'Nilai (Rp)', 'Label': 'Pemegang Saham'},
-            hover_data={'Total_Nilai_Rp': False, 'Nilai_Display': True, 'Kode Efek': True}
-        )
-        fig.update_layout(height=500)
-        fig.update_xaxes(tickformat=",.0f")  # Format sumbu x dengan separator
-        st.plotly_chart(fig, use_container_width=True)
-        
-# ============= DEEP DIVE LINE CHART - ALL REKENING =============
-st.subheader("📈 DEEP DIVE: Perbandingan Semua Pemegang Rekening Efek")
-st.caption("Multi-line chart: Setiap rekening efek adalah 1 garis. Bandingkan siapa akumulasi, siapa distribusi.")
-
-# Input untuk deep dive - Pilih SAHAM dulu, baru lihat SEMUA rekening
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    # Pilihan saham
-    stock_options = df_master_filtered['Kode Efek'].unique()
-    selected_stock_dd = st.selectbox(
-        "Pilih Kode Efek untuk Deep Dive",
-        sorted(stock_options),
-        index=0 if len(stock_options) > 0 else None
-    )
-
-with col2:
-    # Pilihan interval weekly
-    weekly_option = st.selectbox(
-        "Interval",
-        ["Weekly", "Bi-Weekly", "Monthly"],
-        index=0,
-        key="weekly_dd"
-    )
-
-if selected_stock_dd:
-    # Tentukan frekuensi resample
-    if weekly_option == "Weekly":
-        freq = 'W'  # Weekly
-    elif weekly_option == "Bi-Weekly":
-        freq = '2W'  # 2 minggu
+    if df_master_filtered.empty:
+        st.warning("Tidak ada data kepemilikan 5% pada periode yang dipilih.")
     else:
-        freq = 'ME'  # Month End
-    
-    # ============= CHART 1: MULTI-LINE KEPEMILIKAN (SEMUA REKENING) =============
-    st.subheader(f"📊 Perbandingan Kepemilikan Semua Rekening - {selected_stock_dd}")
-    
-    # Ambil SEMUA data untuk saham ini, tanpa filter rekening
-    df_all_rekening = df_master_filtered[
-        df_master_filtered['Kode Efek'] == selected_stock_dd
-    ].copy()
-    
-    if not df_all_rekening.empty:
-        # Dapatkan daftar semua rekening efek
-        all_rekening = df_all_rekening['Nama Rekening Efek'].unique()
-        st.info(f"Menampilkan {len(all_rekening)} Pemegang Rekening Efek untuk {selected_stock_dd}")
-        
-        # Buat figure
-        fig_multi = go.Figure()
-        
-        # Warna-warna untuk banyak line
-        colors = px.colors.qualitative.Plotly + px.colors.qualitative.Alphabet * 5
-        
-        # Loop setiap rekening efek
-        for idx, rekening in enumerate(all_rekening):
-            # Filter data per rekening
-            df_rek = df_all_rekening[
-                df_all_rekening['Nama Rekening Efek'] == rekening
-            ].sort_values('Tanggal_Data').copy()
+        # TERAPKAN PEMBERSIHAN DATA
+        with st.spinner('🧹 Membersihkan & clustering data kepemilikan 5%...'):
+            # Bersihkan Nama Rekening
+            df_master_filtered['Rekening_Bersih'] = df_master_filtered['Nama Rekening Efek'].apply(clean_entity_name)
             
-            if len(df_rek) >= 2:  # Minimal 2 titik data untuk line
-                # Resample ke weekly
-                df_rek.set_index('Tanggal_Data', inplace=True)
-                df_rek_weekly = df_rek.resample(freq).last().dropna(subset=['Jumlah Saham (Curr)']).reset_index()
-                df_rek.reset_index(inplace=True)
+            # Bersihkan Nama Pemegang Saham
+            df_master_filtered['Pemegang_Bersih'] = df_master_filtered['Nama Pemegang Saham'].apply(clean_entity_name)
+            
+            # Deteksi UBO
+            df_master_filtered['UBO'] = df_master_filtered.apply(
+                lambda row: detect_ubo(
+                    row.get('Rekening_Bersih', ''), 
+                    row.get('Pemegang_Bersih', '')
+                ), axis=1
+            )
+            
+            # Flagging
+            df_master_filtered['Is_Adaro'] = df_master_filtered['UBO'].str.contains('ADARO', na=False, case=False)
+            df_master_filtered['Is_LKH'] = df_master_filtered['UBO'].str.contains('LO KHENG HONG', na=False, case=False)
+            df_master_filtered['Is_Saratoga'] = df_master_filtered['UBO'].str.contains('SARATOGA', na=False, case=False)
+            df_master_filtered['Is_Nominee'] = df_master_filtered['UBO'].str.contains('NOMINEE', na=False, case=False)
+            
+            st.success(f"✅ Data dibersihkan: {len(df_master_filtered['UBO'].unique())} entitas unik (UBO) terdeteksi.")
+        
+        # Filter sektor (jika ada)
+        if selected_sectors:
+            sector_map = df_harian[['Stock Code', 'Sector']].drop_duplicates('Stock Code')
+            df_master_filtered = df_master_filtered.merge(sector_map, left_on='Kode Efek', right_on='Stock Code', how='left')
+            df_master_filtered = df_master_filtered[df_master_filtered['Sector'].isin(selected_sectors)]
+        
+        # =========================================================================
+        # PARAMETER DETEKSI AKUMULASI AWAL
+        # =========================================================================
+        st.subheader("⚙️ Parameter Akumulasi Awal")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            min_beli = st.number_input("Minimal Beli (lembar)", min_value=1000, value=100000, step=10000, 
+                                       help="Filter pembelian minimal", format="%d", key="min_beli_clean")
+        with col2:
+            lookback_days = st.number_input("Lookback (hari)", min_value=7, max_value=90, value=30, 
+                                           help="Dalam X hari terakhir", key="lookback_clean")
+        with col3:
+            min_freq = st.number_input("Minimal Frekuensi", min_value=1, max_value=20, value=2,
+                                      help="Minimal berapa kali transaksi", key="min_freq_clean")
+        
+        # Hitung cutoff date
+        cutoff_date = pd.to_datetime(end_date) - timedelta(days=lookback_days)
+        
+        # =========================================================================
+        # DETEKSI AKUMULASI AWAL PER UBO
+        # =========================================================================
+        
+        # Filter: Aksi BELI, jumlah beli >= minimal, dalam periode lookback
+        df_beli = df_master_filtered[
+            (df_master_filtered['Aksi'] == 'Beli') &
+            (df_master_filtered['Perubahan_Saham'] >= min_beli) &
+            (df_master_filtered['Tanggal_Data'] >= cutoff_date)
+        ].copy()
+        
+        if not df_beli.empty:
+            # Kelompokkan per UBO + Kode Efek
+            df_akumulasi = df_beli.groupby(
+                ['UBO', 'Kode Efek']
+            ).agg({
+                'Perubahan_Saham': 'sum',
+                'Estimasi_Nilai': 'sum',
+                'Tanggal_Data': ['first', 'last', 'count'],
+                'Rekening_Bersih': lambda x: list(x.unique()),  # Simpan rekening yang digunakan
+                'Pemegang_Bersih': 'first'
+            }).reset_index()
+            
+            # Flatten column names
+            df_akumulasi.columns = [
+                'UBO', 'Kode Efek', 
+                'Total_Beli_Lembar', 'Total_Nilai_Rp', 
+                'Tgl_Pertama', 'Tgl_Terakhir', 'Frekuensi_Transaksi',
+                'Daftar_Rekening', 'Pemegang_Saham'
+            ]
+            
+            # Skor Akumulasi Awal
+            df_akumulasi['Skor_Akumulasi'] = (
+                np.log1p(df_akumulasi['Total_Beli_Lembar']) * 0.5 +
+                np.log1p(df_akumulasi['Frekuensi_Transaksi']) * 0.3 +
+                (1 - (df_akumulasi['Tgl_Terakhir'] - df_akumulasi['Tgl_Pertama']).dt.days / lookback_days) * 0.2
+            )
+            
+            # Filter frekuensi minimal
+            df_akumulasi = df_akumulasi[df_akumulasi['Frekuensi_Transaksi'] >= min_freq]
+            df_akumulasi = df_akumulasi.sort_values('Skor_Akumulasi', ascending=False)
+            
+            # Merge dengan sektor
+            sector_map = df_harian[['Stock Code', 'Sector']].drop_duplicates('Stock Code')
+            df_akumulasi = df_akumulasi.merge(sector_map, left_on='Kode Efek', right_on='Stock Code', how='left')
+            
+            # =========================================================================
+            # TAMPILKAN HASIL AKUMULASI AWAL
+            # =========================================================================
+            st.subheader(f"🎯 {len(df_akumulasi)} Indikasi Akumulasi Awal (per UBO)")
+            st.caption("Semakin tinggi Skor = Semakin agresif akumulasi dalam waktu singkat")
+            
+            if not df_akumulasi.empty:
+                # Buat display dengan format
+                df_display = df_akumulasi.copy()
+                df_display['Total_Beli_Lembar_Display'] = df_display['Total_Beli_Lembar'].apply(format_lembar)
+                df_display['Total_Nilai_Rp_Display'] = df_display['Total_Nilai_Rp'].apply(format_rupiah)
+                df_display['Skor_Display'] = df_display['Skor_Akumulasi'].apply(lambda x: f"{x:.2f}")
+                df_display['Jumlah_Rekening'] = df_display['Daftar_Rekening'].apply(len)
                 
-                # Ambil nama pemegang saham untuk hover (lebih pendek)
-                nama_pemegang = df_rek['Nama Pemegang Saham'].iloc[0] if 'Nama Pemegang Saham' in df_rek.columns else rekening
-                label = f"{rekening[:20]}..." if len(rekening) > 20 else rekening
-                
-                # Tambahkan line ke chart
-                fig_multi.add_trace(go.Scatter(
-                    x=df_rek_weekly['Tanggal_Data'],
-                    y=df_rek_weekly['Jumlah Saham (Curr)'],
-                    mode='lines+markers',
-                    name=label,
-                    line=dict(color=colors[idx % len(colors)], width=2.5),
-                    marker=dict(size=6),
-                    hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
-                                 f'Rekening: {rekening}<br>' +
-                                 'Kepemilikan: %{customdata}<extra></extra>',
-                    customdata=df_rek_weekly['Jumlah Saham (Curr)'].apply(lambda x: format_lembar(x))
-                ))
-        
-        # Update layout multi-line chart
-        fig_multi.update_layout(
-            title=f"Tren Kepemilikan - {selected_stock_dd} (Semua Rekening)",
-            height=600,
-            hovermode='x unified',
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=-0.3,
-                xanchor="center",
-                x=0.5,
-                font=dict(size=10)
-            ),
-            yaxis=dict(
-                title="Jumlah Saham (Lembar)",
-                tickformat=",.0f",
-                gridcolor='lightgray',
-                rangemode='nonnegative'
-            ),
-            xaxis=dict(
-                title="Tanggal (Weekly)",
-                tickformat="%d-%m-%Y"
-            ),
-            margin=dict(b=150)  # Ruang untuk legend horizontal
-        )
-        
-        st.plotly_chart(fig_multi, use_container_width=True)
-        
-        # ============= CHART 2: HARGA CLOSE =============
-        st.subheader(f"📈 Pergerakan Harga - {selected_stock_dd}")
-        
-        # Ambil data harga dari df_harian
-        df_harga = df_harian[
-            df_harian['Stock Code'] == selected_stock_dd
-        ].sort_values('Last Trading Date').copy()
-        
-        if not df_harga.empty:
-            # Resample harga ke weekly
-            df_harga.set_index('Last Trading Date', inplace=True)
-            df_harga_weekly = df_harga.resample(freq).last().dropna(subset=['Close']).reset_index()
-            df_harga.reset_index(inplace=True)
-            
-            fig_price = go.Figure()
-            
-            # Line chart harga
-            fig_price.add_trace(go.Scatter(
-                x=df_harga_weekly['Last Trading Date'],
-                y=df_harga_weekly['Close'],
-                mode='lines+markers',
-                name='Harga Close',
-                line=dict(color='#E74C3C', width=3),
-                marker=dict(size=8, color='#E74C3C'),
-                hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
-                             'Harga: %{customdata}<extra></extra>',
-                customdata=df_harga_weekly['Close'].apply(lambda x: format_rupiah(x))
-            ))
-            
-            # Tambahkan volume spike sebagai scatter (opsional)
-            if 'Volume Spike (x)' in df_harga_weekly.columns:
-                df_harga_weekly['Volume Spike (x)'] = pd.to_numeric(df_harga_weekly['Volume Spike (x)'], errors='coerce')
-                spike = df_harga_weekly[df_harga_weekly['Volume Spike (x)'] > 1.5]
-                if not spike.empty:
-                    fig_price.add_trace(go.Scatter(
-                        x=spike['Last Trading Date'],
-                        y=spike['Close'],
-                        mode='markers',
-                        name='Volume Spike',
-                        marker=dict(color='#F39C12', size=12, symbol='star'),
-                        hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
-                                     'Volume Spike: %{customdata:.1f}x<extra></extra>',
-                        customdata=spike['Volume Spike (x)']
-                    ))
-            
-            fig_price.update_layout(
-                title=f"Pergerakan Harga - {selected_stock_dd}",
-                height=400,
-                hovermode='x unified',
-                yaxis=dict(
-                    title="Harga (Rp)",
-                    tickformat=",.0f",
-                    gridcolor='lightgray'
-                ),
-                xaxis=dict(
-                    title="Tanggal (Weekly)",
-                    tickformat="%d-%m-%Y"
+                # Tabel utama
+                st.dataframe(
+                    df_display[['UBO', 'Kode Efek', 'Sector',
+                               'Total_Beli_Lembar_Display', 'Total_Nilai_Rp_Display', 
+                               'Frekuensi_Transaksi', 'Jumlah_Rekening',
+                               'Tgl_Pertama', 'Tgl_Terakhir', 'Skor_Display']].head(50),
+                    column_config={
+                        'UBO': st.column_config.TextColumn("Ultimate Beneficial Owner", width="large"),
+                        'Total_Beli_Lembar_Display': st.column_config.TextColumn("Total Beli (Lembar)"),
+                        'Total_Nilai_Rp_Display': st.column_config.TextColumn("Estimasi Nilai"),
+                        'Frekuensi_Transaksi': st.column_config.NumberColumn("Frekuensi", format="%d"),
+                        'Jumlah_Rekening': st.column_config.NumberColumn("Jml Rekening"),
+                        'Tgl_Pertama': st.column_config.DateColumn(format="DD-MM-YY"),
+                        'Tgl_Terakhir': st.column_config.DateColumn(format="DD-MM-YY"),
+                        'Skor_Display': st.column_config.TextColumn("Skor")
+                    },
+                    use_container_width=True,
+                    hide_index=True
                 )
-            )
-            
-            st.plotly_chart(fig_price, use_container_width=True)
+                
+                # =========================================================================
+                # TOP 10 AKUMULATOR (BAR CHART)
+                # =========================================================================
+                st.subheader("💰 Top 10 UBO Akumulator Terbesar (Nilai Rp)")
+                top10 = df_akumulasi.nlargest(10, 'Total_Nilai_Rp').copy()
+                top10['Label'] = top10['UBO'].apply(lambda x: x[:30] + '...' if len(x) > 30 else x)
+                top10['Nilai_Display'] = top10['Total_Nilai_Rp'].apply(format_rupiah)
+                
+                fig = px.bar(
+                    top10,
+                    x='Total_Nilai_Rp',
+                    y='Label',
+                    color='Sector',
+                    orientation='h',
+                    title="Total Nilai Pembelian (Estimasi) per UBO",
+                    labels={'Total_Nilai_Rp': 'Nilai (Rp)', 'Label': 'Ultimate Beneficial Owner'},
+                    hover_data={'Total_Nilai_Rp': False, 'Nilai_Display': True, 'Kode Efek': True}
+                )
+                fig.update_layout(height=500)
+                fig.update_xaxes(tickformat=",.0f")
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # =========================================================================
+                # DEEP DIVE: MULTI-LINE CHART PER UBO
+                # =========================================================================
+                st.subheader("📈 DEEP DIVE: Perbandingan Akumulasi per UBO")
+                st.caption("**Multi-line chart**: Setiap Ultimate Beneficial Owner (UBO) adalah 1 garis. Bandingkan siapa akumulasi, siapa distribusi.")
+                
+                col_a, col_b, col_c = st.columns([2, 1, 1])
+                
+                with col_a:
+                    # Pilih SAHAM dulu
+                    stock_options = sorted(df_master_filtered['Kode Efek'].unique())
+                    selected_stock_dd = st.selectbox(
+                        "Pilih Kode Efek untuk Deep Dive",
+                        stock_options,
+                        index=0 if len(stock_options) > 0 else None,
+                        key="stock_dd_clean"
+                    )
+                
+                with col_b:
+                    # Filter UBO (opsional)
+                    ubo_filter = st.selectbox(
+                        "Filter UBO",
+                        ["Semua UBO", "Hanya Adaro Group", "Hanya LKH", "Hanya Saratoga", "Kustom..."],
+                        index=0,
+                        key="ubo_filter_clean"
+                    )
+                
+                with col_c:
+                    # Interval weekly
+                    weekly_option = st.selectbox(
+                        "Interval",
+                        ["Weekly", "Bi-Weekly", "Monthly"],
+                        index=0,
+                        key="weekly_dd_clean"
+                    )
+                
+                # Tentukan frekuensi resample
+                if weekly_option == "Weekly":
+                    freq = 'W'
+                elif weekly_option == "Bi-Weekly":
+                    freq = '2W'
+                else:
+                    freq = 'ME'
+                
+                if selected_stock_dd:
+                    # Ambil SEMUA data untuk saham ini
+                    df_all_ubo = df_master_filtered[
+                        df_master_filtered['Kode Efek'] == selected_stock_dd
+                    ].copy()
+                    
+                    if not df_all_ubo.empty:
+                        # Dapatkan daftar UBO unik
+                        all_ubos = df_all_ubo['UBO'].unique()
+                        
+                        # Terapkan filter UBO
+                        if ubo_filter == "Hanya Adaro Group":
+                            all_ubos = [u for u in all_ubos if 'ADARO' in str(u).upper()]
+                        elif ubo_filter == "Hanya LKH":
+                            all_ubos = [u for u in all_ubos if 'LO KHENG HONG' in str(u).upper()]
+                        elif ubo_filter == "Hanya Saratoga":
+                            all_ubos = [u for u in all_ubos if 'SARATOGA' in str(u).upper()]
+                        
+                        st.info(f"Menampilkan {len(all_ubos)} Ultimate Beneficial Owner untuk {selected_stock_dd}")
+                        
+                        # BUAT MULTI-LINE CHART
+                        fig_multi = go.Figure()
+                        colors = px.colors.qualitative.Plotly + px.colors.qualitative.Alphabet * 5
+                        
+                        for idx, ubo in enumerate(all_ubos):
+                            # Filter data per UBO
+                            df_ubo = df_all_ubo[
+                                df_all_ubo['UBO'] == ubo
+                            ].sort_values('Tanggal_Data').copy()
+                            
+                            if len(df_ubo) >= 2:  # Minimal 2 titik
+                                # Resample ke weekly
+                                df_ubo.set_index('Tanggal_Data', inplace=True)
+                                df_ubo_weekly = df_ubo.resample(freq).last().dropna(subset=['Jumlah Saham (Curr)']).reset_index()
+                                df_ubo.reset_index(inplace=True)
+                                
+                                # Label untuk legend
+                                label = ubo[:25] + '...' if len(ubo) > 25 else ubo
+                                
+                                # Tambahkan line
+                                fig_multi.add_trace(go.Scatter(
+                                    x=df_ubo_weekly['Tanggal_Data'],
+                                    y=df_ubo_weekly['Jumlah Saham (Curr)'],
+                                    mode='lines+markers',
+                                    name=label,
+                                    line=dict(color=colors[idx % len(colors)], width=2.5),
+                                    marker=dict(size=6),
+                                    hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
+                                                 f'UBO: {ubo}<br>' +
+                                                 'Kepemilikan: %{customdata}<extra></extra>',
+                                    customdata=df_ubo_weekly['Jumlah Saham (Curr)'].apply(format_lembar)
+                                ))
+                        
+                        # Update layout
+                        fig_multi.update_layout(
+                            title=f"Tren Kepemilikan - {selected_stock_dd} (per Ultimate Beneficial Owner)",
+                            height=600,
+                            hovermode='x unified',
+                            legend=dict(
+                                orientation="h",
+                                yanchor="bottom",
+                                y=-0.4,
+                                xanchor="center",
+                                x=0.5,
+                                font=dict(size=10)
+                            ),
+                            yaxis=dict(
+                                title="Jumlah Saham (Lembar)",
+                                tickformat=",.0f",
+                                gridcolor='lightgray',
+                                rangemode='nonnegative'
+                            ),
+                            xaxis=dict(
+                                title="Tanggal (Weekly)",
+                                tickformat="%d-%m-%Y"
+                            ),
+                            margin=dict(b=150)
+                        )
+                        
+                        st.plotly_chart(fig_multi, use_container_width=True)
+                        
+                        # =========================================================================
+                        # CHART HARGA (TERPISAH)
+                        # =========================================================================
+                        st.subheader(f"📈 Pergerakan Harga - {selected_stock_dd}")
+                        
+                        df_harga = df_harian[
+                            df_harian['Stock Code'] == selected_stock_dd
+                        ].sort_values('Last Trading Date').copy()
+                        
+                        if not df_harga.empty:
+                            df_harga.set_index('Last Trading Date', inplace=True)
+                            df_harga_weekly = df_harga.resample(freq).last().dropna(subset=['Close']).reset_index()
+                            df_harga.reset_index(inplace=True)
+                            
+                            fig_price = go.Figure()
+                            
+                            fig_price.add_trace(go.Scatter(
+                                x=df_harga_weekly['Last Trading Date'],
+                                y=df_harga_weekly['Close'],
+                                mode='lines+markers',
+                                name='Harga Close',
+                                line=dict(color='#E74C3C', width=3),
+                                marker=dict(size=8, color='#E74C3C'),
+                                hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
+                                             'Harga: %{customdata}<extra></extra>',
+                                customdata=df_harga_weekly['Close'].apply(format_rupiah)
+                            ))
+                            
+                            # Volume spike
+                            if 'Volume Spike (x)' in df_harga_weekly.columns:
+                                df_harga_weekly['Volume Spike (x)'] = pd.to_numeric(df_harga_weekly['Volume Spike (x)'], errors='coerce')
+                                spike = df_harga_weekly[df_harga_weekly['Volume Spike (x)'] > 1.5]
+                                if not spike.empty:
+                                    fig_price.add_trace(go.Scatter(
+                                        x=spike['Last Trading Date'],
+                                        y=spike['Close'],
+                                        mode='markers',
+                                        name='Volume Spike',
+                                        marker=dict(color='#F39C12', size=12, symbol='star'),
+                                        hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
+                                                     'Volume Spike: %{customdata:.1f}x<extra></extra>',
+                                        customdata=spike['Volume Spike (x)']
+                                    ))
+                            
+                            fig_price.update_layout(
+                                title=f"Pergerakan Harga - {selected_stock_dd}",
+                                height=400,
+                                hovermode='x unified',
+                                yaxis=dict(
+                                    title="Harga (Rp)",
+                                    tickformat=",.0f",
+                                    gridcolor='lightgray'
+                                ),
+                                xaxis=dict(
+                                    title="Tanggal (Weekly)",
+                                    tickformat="%d-%m-%Y"
+                                )
+                            )
+                            st.plotly_chart(fig_price, use_container_width=True)
+                        else:
+                            st.warning(f"Data harga tidak ditemukan untuk {selected_stock_dd}")
+                        
+                        # =========================================================================
+                        # TABEL RINGKASAN PER UBO
+                        # =========================================================================
+                        st.subheader("📋 Ringkasan Aktivitas per Ultimate Beneficial Owner")
+                        
+                        summary_data = []
+                        for ubo in all_ubos:
+                            df_ubo_sum = df_all_ubo[df_all_ubo['UBO'] == ubo].sort_values('Tanggal_Data')
+                            
+                            if not df_ubo_sum.empty:
+                                first_date = df_ubo_sum['Tanggal_Data'].iloc[0]
+                                last_date = df_ubo_sum['Tanggal_Data'].iloc[-1]
+                                first_hold = df_ubo_sum['Jumlah Saham (Curr)'].iloc[0]
+                                last_hold = df_ubo_sum['Jumlah Saham (Curr)'].iloc[-1]
+                                change = last_hold - first_hold
+                                change_pct = (change / first_hold * 100) if first_hold > 0 else 0
+                                
+                                total_beli = df_ubo_sum[df_ubo_sum['Perubahan_Saham'] > 0]['Perubahan_Saham'].sum()
+                                total_jual = abs(df_ubo_sum[df_ubo_sum['Perubahan_Saham'] < 0]['Perubahan_Saham'].sum())
+                                frekuensi = len(df_ubo_sum)
+                                jml_rekening = df_ubo_sum['Rekening_Bersih'].nunique()
+                                pemegang = df_ubo_sum['Pemegang_Bersih'].iloc[0] if 'Pemegang_Bersih' in df_ubo_sum.columns else "-"
+                                
+                                summary_data.append({
+                                    'Ultimate Beneficial Owner': ubo,
+                                    'Pemegang Saham': pemegang[:30] + '...' if len(pemegang) > 30 else pemegang,
+                                    'Jml Rekening': jml_rekening,
+                                    'Periode Awal': first_date.strftime('%d-%m-%Y'),
+                                    'Periode Akhir': last_date.strftime('%d-%m-%Y'),
+                                    'Kepemilikan Awal': format_lembar(first_hold),
+                                    'Kepemilikan Akhir': format_lembar(last_hold),
+                                    'Perubahan': format_lembar(change),
+                                    'Δ %': f"{change_pct:.1f}%",
+                                    'Total Beli': format_lembar(total_beli),
+                                    'Total Jual': format_lembar(total_jual),
+                                    'Frekuensi': frekuensi
+                                })
+                        
+                        df_summary = pd.DataFrame(summary_data)
+                        
+                        st.dataframe(
+                            df_summary,
+                            column_config={
+                                'Ultimate Beneficial Owner': st.column_config.TextColumn("UBO", width="large"),
+                                'Jml Rekening': st.column_config.NumberColumn("Jml Rekening"),
+                                'Perubahan': st.column_config.TextColumn("Perubahan"),
+                                'Δ %': st.column_config.TextColumn("Δ %"),
+                                'Total Beli': st.column_config.TextColumn("Total Beli"),
+                                'Total Jual': st.column_config.TextColumn("Total Jual"),
+                                'Frekuensi': st.column_config.NumberColumn("Frekuensi")
+                            },
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        
+                        # =========================================================================
+                        # DETAIL TRANSAKSI PER UBO
+                        # =========================================================================
+                        with st.expander("📋 Lihat Detail Transaksi per Ultimate Beneficial Owner"):
+                            selected_ubo_detail = st.selectbox(
+                                "Pilih UBO untuk lihat detail transaksi",
+                                all_ubos,
+                                key="ubo_detail_clean"
+                            )
+                            
+                            if selected_ubo_detail:
+                                df_detail = df_all_ubo[
+                                    df_all_ubo['UBO'] == selected_ubo_detail
+                                ].sort_values('Tanggal_Data', ascending=False).copy()
+                                
+                                if not df_detail.empty:
+                                    df_display = df_detail[[
+                                        'Tanggal_Data', 'Aksi', 'Perubahan_Saham', 
+                                        'Jumlah Saham (Curr)', 'Close_Price', 'Estimasi_Nilai',
+                                        'Rekening_Bersih', 'Pemegang_Bersih'
+                                    ]].copy()
+                                    
+                                    df_display['Tanggal_Data'] = df_display['Tanggal_Data'].dt.strftime('%d-%m-%Y')
+                                    df_display['Perubahan_Saham'] = df_display['Perubahan_Saham'].apply(
+                                        lambda x: f"{format_lembar(abs(x))} ({'+' if x > 0 else '-'}{abs(x):,.0f})".replace(",", ".")
+                                    )
+                                    df_display['Jumlah Saham (Curr)'] = df_display['Jumlah Saham (Curr)'].apply(format_lembar)
+                                    df_display['Close_Price'] = df_display['Close_Price'].apply(format_rupiah)
+                                    df_display['Estimasi_Nilai'] = df_display['Estimasi_Nilai'].apply(format_rupiah)
+                                    
+                                    st.dataframe(
+                                        df_display,
+                                        use_container_width=True,
+                                        hide_index=True
+                                    )
+                                    
+                                    # Download button
+                                    csv = df_display.to_csv(index=False).encode('utf-8')
+                                    st.download_button(
+                                        label=f"📥 Download Transaksi {selected_ubo_detail[:20]}... (CSV)",
+                                        data=csv,
+                                        file_name=f"{selected_stock_dd}_{selected_ubo_detail[:20]}_transaksi.csv",
+                                        mime="text/csv"
+                                    )
+                    else:
+                        st.warning(f"Tidak ada data kepemilikan 5% untuk {selected_stock_dd}")
+            else:
+                st.info("Tidak ada akumulasi awal dengan kriteria tersebut. Coba turunkan threshold minimal beli atau frekuensi.")
         else:
-            st.warning(f"Data harga tidak ditemukan untuk {selected_stock_dd}")
-        
-        # ============= TABEL RINGKASAN PER REKENING =============
-        st.subheader("📋 Ringkasan Aktivitas per Rekening Efek")
-        
-        # Hitung ringkasan per rekening
-        summary_data = []
-        for rekening in all_rekening:
-            df_rek_sum = df_all_rekening[
-                df_all_rekening['Nama Rekening Efek'] == rekening
-            ].sort_values('Tanggal_Data')
+            st.info("Tidak ada transaksi BELI dengan kriteria tersebut. Coba turunkan threshold minimal beli atau perbesar periode lookback.")
             
-            if not df_rek_sum.empty:
-                # Data pertama dan terakhir
-                first_date = df_rek_sum['Tanggal_Data'].iloc[0]
-                last_date = df_rek_sum['Tanggal_Data'].iloc[-1]
-                first_hold = df_rek_sum['Jumlah Saham (Curr)'].iloc[0]
-                last_hold = df_rek_sum['Jumlah Saham (Curr)'].iloc[-1]
-                change = last_hold - first_hold
-                change_pct = (change / first_hold * 100) if first_hold > 0 else 0
-                
-                # Total beli/jual
-                total_beli = df_rek_sum[df_rek_sum['Perubahan_Saham'] > 0]['Perubahan_Saham'].sum()
-                total_jual = abs(df_rek_sum[df_rek_sum['Perubahan_Saham'] < 0]['Perubahan_Saham'].sum())
-                frekuensi = len(df_rek_sum)
-                
-                # Nama pemegang saham
-                pemegang = df_rek_sum['Nama Pemegang Saham'].iloc[0] if 'Nama Pemegang Saham' in df_rek_sum.columns else "-"
-                
-                summary_data.append({
-                    'Rekening Efek': rekening[:40] + '...' if len(rekening) > 40 else rekening,
-                    'Pemegang Saham': pemegang[:30] + '...' if len(pemegang) > 30 else pemegang,
-                    'Periode Awal': first_date.strftime('%d-%m-%Y'),
-                    'Periode Akhir': last_date.strftime('%d-%m-%Y'),
-                    'Kepemilikan Awal': format_lembar(first_hold),
-                    'Kepemilikan Akhir': format_lembar(last_hold),
-                    'Perubahan': format_lembar(change),
-                    'Δ %': f"{change_pct:.1f}%",
-                    'Total Beli': format_lembar(total_beli),
-                    'Total Jual': format_lembar(total_jual),
-                    'Frekuensi': frekuensi
-                })
-        
-        df_summary = pd.DataFrame(summary_data)
-        
-        # Tampilkan tabel dengan conditional formatting via column config
-        st.dataframe(
-            df_summary,
-            column_config={
-                'Rekening Efek': st.column_config.TextColumn("Rekening Efek", width="medium"),
-                'Pemegang Saham': st.column_config.TextColumn("Pemegang Saham", width="medium"),
-                'Perubahan': st.column_config.TextColumn("Perubahan"),
-                'Δ %': st.column_config.TextColumn("Δ %"),
-                'Total Beli': st.column_config.TextColumn("Total Beli"),
-                'Total Jual': st.column_config.TextColumn("Total Jual"),
-                'Frekuensi': st.column_config.NumberColumn("Frekuensi", format="%d")
-            },
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # ============= DETAIL TRANSAKSI (PILIH REKENING) =============
-        with st.expander("📋 Lihat Detail Transaksi per Rekening"):
-            selected_rek_detail = st.selectbox(
-                "Pilih Rekening Efek untuk lihat detail transaksi",
-                all_rekening,
-                key="rek_detail"
-            )
-            
-            if selected_rek_detail:
-                df_detail = df_all_rekening[
-                    df_all_rekening['Nama Rekening Efek'] == selected_rek_detail
-                ].sort_values('Tanggal_Data', ascending=False).copy()
-                
-                if not df_detail.empty:
-                    df_display = df_detail[[
-                        'Tanggal_Data', 'Aksi', 'Perubahan_Saham', 
-                        'Jumlah Saham (Curr)', 'Close_Price', 'Estimasi_Nilai'
-                    ]].copy()
-                    
-                    df_display['Tanggal_Data'] = df_display['Tanggal_Data'].dt.strftime('%d-%m-%Y')
-                    df_display['Perubahan_Saham'] = df_display['Perubahan_Saham'].apply(
-                        lambda x: f"{format_lembar(abs(x))} ({'+' if x > 0 else '-'}{abs(x):,.0f})".replace(",", ".")
-                    )
-                    df_display['Jumlah Saham (Curr)'] = df_display['Jumlah Saham (Curr)'].apply(format_lembar)
-                    df_display['Close_Price'] = df_display['Close_Price'].apply(format_rupiah)
-                    df_display['Estimasi_Nilai'] = df_display['Estimasi_Nilai'].apply(format_rupiah)
-                    
-                    st.dataframe(
-                        df_display,
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                    
-                    # Download button
-                    csv = df_display.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label=f"📥 Download Transaksi {selected_rek_detail[:20]}... (CSV)",
-                        data=csv,
-                        file_name=f"{selected_stock_dd}_{selected_rek_detail[:20]}_transaksi.csv",
-                        mime="text/csv"
-                    )
-    else:
-        st.warning(f"Tidak ada data kepemilikan 5% untuk {selected_stock_dd}")
-else:
-    st.info("Pilih Kode Efek untuk melihat perbandingan semua pemegang rekening efek")
 # =============================================================================
 # TAB 4: WATCHLIST & KONVERGENSI SINYAL
 # =============================================================================
