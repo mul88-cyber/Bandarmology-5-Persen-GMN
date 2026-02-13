@@ -505,7 +505,7 @@ with tab3:
     cutoff_date = pd.to_datetime(end_date) - timedelta(days=lookback_days)
     
     # =========================================================================
-    # DETEKSI AKUMULASI AWAL PER UBO
+    # DETEKSI AKUMULASI AWAL PER UBO - VERSI FIX (ANTI ERROR)
     # =========================================================================
     df_beli = df_master_filtered[
         (df_master_filtered['Aksi'] == 'Beli') &
@@ -514,60 +514,62 @@ with tab3:
     ].copy()
     
     if not df_beli.empty:
-        # Group by UBO + Kode Efek
-        group_cols = ['UBO', 'Kode Efek']
-        agg_dict = {
+        # --- METHOD 1: AGGRESSI DENGAN NAMA KOLOM EKSPLISIT (LEBIH AMAN) ---
+        
+        # 1. Groupby dan hitung agregasi SATU PER SATU
+        df_akumulasi = df_beli.groupby(['UBO', 'Kode Efek']).agg({
             'Perubahan_Saham': 'sum',
             'Estimasi_Nilai': 'sum',
             'Tanggal_Data': ['first', 'last', 'count']
-        }
+        }).reset_index()
         
-        # Tambahkan kolom tambahan jika ada
+        # 2. Flatten column names dengan cara AMAN
+        # Kolom hasil groupby akan seperti: ('Perubahan_Saham', 'sum'), dll
+        df_akumulasi.columns = [
+            'UBO', 'Kode Efek',
+            'Total_Beli_Lembar', 'Total_Nilai_Rp',
+            'Tgl_Pertama', 'Tgl_Terakhir', 'Frekuensi_Transaksi'
+        ]
+        
+        # 3. Tambahkan kolom tambahan secara TERPISAH (jika ada)
         if 'Rekening_Bersih' in df_beli.columns:
-            agg_dict['Rekening_Bersih'] = lambda x: list(x.unique())
+            rekening_list = df_beli.groupby(['UBO', 'Kode Efek'])['Rekening_Bersih'].apply(lambda x: list(x.unique())).reset_index()
+            rekening_list.columns = ['UBO', 'Kode Efek', 'Daftar_Rekening']
+            df_akumulasi = df_akumulasi.merge(rekening_list, on=['UBO', 'Kode Efek'], how='left')
+            df_akumulasi['Jumlah_Rekening'] = df_akumulasi['Daftar_Rekening'].apply(lambda x: len(x) if isinstance(x, list) else 0)
+        
         if 'Pemegang_Bersih' in df_beli.columns:
-            agg_dict['Pemegang_Bersih'] = 'first'
+            pemegang_first = df_beli.groupby(['UBO', 'Kode Efek'])['Pemegang_Bersih'].first().reset_index()
+            pemegang_first.columns = ['UBO', 'Kode Efek', 'Pemegang_Saham']
+            df_akumulasi = df_akumulasi.merge(pemegang_first, on=['UBO', 'Kode Efek'], how='left')
+        
         if 'Is_Adaro' in df_beli.columns:
-            agg_dict['Is_Adaro'] = 'first'
+            adaro_flag = df_beli.groupby(['UBO', 'Kode Efek'])['Is_Adaro'].first().reset_index()
+            adaro_flag.columns = ['UBO', 'Kode Efek', 'Is_Adaro']
+            df_akumulasi = df_akumulasi.merge(adaro_flag, on=['UBO', 'Kode Efek'], how='left')
+        
         if 'Is_LKH' in df_beli.columns:
-            agg_dict['Is_LKH'] = 'first'
+            lkh_flag = df_beli.groupby(['UBO', 'Kode Efek'])['Is_LKH'].first().reset_index()
+            lkh_flag.columns = ['UBO', 'Kode Efek', 'Is_LKH']
+            df_akumulasi = df_akumulasi.merge(lkh_flag, on=['UBO', 'Kode Efek'], how='left')
+        
         if 'Is_Saratoga' in df_beli.columns:
-            agg_dict['Is_Saratoga'] = 'first'
+            saratoga_flag = df_beli.groupby(['UBO', 'Kode Efek'])['Is_Saratoga'].first().reset_index()
+            saratoga_flag.columns = ['UBO', 'Kode Efek', 'Is_Saratoga']
+            df_akumulasi = df_akumulasi.merge(saratoga_flag, on=['UBO', 'Kode Efek'], how='left')
         
-        df_akumulasi = df_beli.groupby(group_cols).agg(agg_dict).reset_index()
-        
-        # Flatten column names
-        df_akumulasi.columns = ['UBO', 'Kode Efek', 
-                                'Total_Beli_Lembar', 'Total_Nilai_Rp', 
-                                'Tgl_Pertama', 'Tgl_Terakhir', 'Frekuensi_Transaksi']
-        
-        # Tambahkan kolom tambahan
-        col_idx = 7
-        if 'Rekening_Bersih' in agg_dict:
-            df_akumulasi['Daftar_Rekening'] = df_beli.groupby(group_cols)['Rekening_Bersih'].apply(lambda x: list(x.unique())).values
-            df_akumulasi['Jumlah_Rekening'] = df_akumulasi['Daftar_Rekening'].apply(len)
-            col_idx += 1
-        if 'Pemegang_Bersih' in agg_dict:
-            df_akumulasi['Pemegang_Saham'] = df_beli.groupby(group_cols)['Pemegang_Bersih'].first().values
-        if 'Is_Adaro' in agg_dict:
-            df_akumulasi['Is_Adaro'] = df_beli.groupby(group_cols)['Is_Adaro'].first().values
-        if 'Is_LKH' in agg_dict:
-            df_akumulasi['Is_LKH'] = df_beli.groupby(group_cols)['Is_LKH'].first().values
-        if 'Is_Saratoga' in agg_dict:
-            df_akumulasi['Is_Saratoga'] = df_beli.groupby(group_cols)['Is_Saratoga'].first().values
-        
-        # Skor Akumulasi Awal
+        # 4. Skor Akumulasi Awal
         df_akumulasi['Skor_Akumulasi'] = (
             np.log1p(df_akumulasi['Total_Beli_Lembar']) * 0.5 +
             np.log1p(df_akumulasi['Frekuensi_Transaksi']) * 0.3 +
             (1 - (df_akumulasi['Tgl_Terakhir'] - df_akumulasi['Tgl_Pertama']).dt.days / lookback_days) * 0.2
         )
         
-        # Filter frekuensi minimal
+        # 5. Filter frekuensi minimal
         df_akumulasi = df_akumulasi[df_akumulasi['Frekuensi_Transaksi'] >= min_freq]
         df_akumulasi = df_akumulasi.sort_values('Skor_Akumulasi', ascending=False)
         
-        # Merge dengan sektor
+        # 6. Merge dengan sektor
         if 'Sector' not in df_akumulasi.columns and 'Kode Efek' in df_akumulasi.columns:
             sector_map = df_harian[['Stock Code', 'Sector']].drop_duplicates('Stock Code')
             df_akumulasi = df_akumulasi.merge(sector_map, left_on='Kode Efek', right_on='Stock Code', how='left')
