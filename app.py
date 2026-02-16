@@ -137,29 +137,27 @@ def load_ksei():
         st.error(f"❌ Gagal load data KSEI: {e}")
         return pd.DataFrame(columns=['Code', 'Date', 'Top_Buyer', 'Top_Seller'])
 
-@st.cache_data(ttl=86400, show_spinner="Loading data kepemilikan 5% (CLEAN)...")
+@st.cache_data(ttl=86400, show_spinner="Loading data kepemilikan 5%...")
 def load_master_5():
-    """Load data master 5% yang sudah di-cluster"""
-    # PRIORITAS: Parquet
-    df = load_parquet_from_gdrive(FILE_IDS['master_5_parquet'])
-    if df is not None:
-        if 'Tanggal_Data' in df.columns:
-            df['Tanggal_Data'] = pd.to_datetime(df['Tanggal_Data'], errors='coerce')
-            df = df.dropna(subset=['Tanggal_Data'])
-        
-        st.sidebar.success("✅ Load data 5% (Parquet)")
-        return df
+    """Load data master 5% - HANYA CSV LIGHT"""
     
-    # FALLBACK: CSV Light
+    # LANGSUNG PAKAI CSV LIGHT
     try:
         df = load_csv_from_gdrive(FILE_IDS['master_5_light'])
         df['Tanggal_Data'] = pd.to_datetime(df['Tanggal_Data'], errors='coerce')
         df = df.dropna(subset=['Tanggal_Data'])
-        st.sidebar.warning("⚠️ Load data 5% (CSV Light - Fallback)")
+        
+        # Konversi numerik
+        numeric_cols = ['Jumlah Saham (Curr)', 'Perubahan_Saham', 'Close_Price', 'Estimasi_Nilai']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        st.sidebar.info("📄 Load data 5% (CSV Light)")
         return df
     except Exception as e:
-        st.error(f"❌ Gagal load data master 5%: {e}")
-        return pd.DataFrame(columns=['Kode Efek', 'Tanggal_Data', 'UBO'])
+        st.error(f"❌ Gagal load CSV Light: {e}")
+        return pd.DataFrame()
 
 # =============================================================================
 # FORMATTER ANGKA
