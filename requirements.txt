@@ -6,3 +6,4 @@ google-auth
 openpyxl
 gdown
 numpy
+scikit-learn
