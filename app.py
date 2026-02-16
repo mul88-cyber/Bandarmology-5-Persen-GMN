@@ -13,32 +13,79 @@ st.set_page_config(layout="wide")
 st.title("🚀 Smart Money Scanner Pro")
 
 # =====================================================
-# 🔐 CONFIG – GANTI DENGAN FILE ID ANDA
+# CONFIG
 # =====================================================
 
 MARKET_FILE_ID = "1t_wCljhepGBqZVrvleuZKldomQKop9DY"
 HOLDER_FILE_ID = "1mS7Xp_PMqFnLTikU7giDZ42mqcbsiYvx"
 
 # =====================================================
-# 📥 LOAD FROM GOOGLE DRIVE
+# ROBUST CSV LOADER
 # =====================================================
 
 @st.cache_data
 def load_csv_from_drive(file_id):
     url = f"https://drive.google.com/uc?export=download&id={file_id}"
     response = requests.get(url)
-    return pd.read_csv(BytesIO(response.content), low_memory=False)
+
+    try:
+        df = pd.read_csv(BytesIO(response.content), sep=None, engine="python")
+    except:
+        df = pd.read_csv(BytesIO(response.content), sep=";")
+
+    df.columns = df.columns.str.strip()
+    return df
 
 try:
     df = load_csv_from_drive(MARKET_FILE_ID)
     holder_df = load_csv_from_drive(HOLDER_FILE_ID)
 except Exception as e:
-    st.error("❌ Gagal load data dari Google Drive")
+    st.error(f"❌ Load error: {e}")
     st.stop()
 
 # =====================================================
-# 🧹 CLEANING
+# STANDARDIZE HOLDER COLUMN NAMES (ANTI KEY ERROR)
 # =====================================================
+
+holder_df.columns = holder_df.columns.str.strip()
+
+# Flexible rename mapping
+rename_map = {}
+
+for col in holder_df.columns:
+    if "Prev" in col:
+        rename_map[col] = "Prev_Shares"
+    if "Curr" in col:
+        rename_map[col] = "Curr_Shares"
+    if "Kode" in col:
+        rename_map[col] = "Stock Code"
+
+holder_df.rename(columns=rename_map, inplace=True)
+
+required_cols = ["Prev_Shares", "Curr_Shares", "Stock Code"]
+
+for col in required_cols:
+    if col not in holder_df.columns:
+        st.error(f"❌ Kolom {col} tidak ditemukan di holder database")
+        st.write("Kolom tersedia:", holder_df.columns.tolist())
+        st.stop()
+
+holder_df["Prev_Shares"] = pd.to_numeric(holder_df["Prev_Shares"], errors="coerce")
+holder_df["Curr_Shares"] = pd.to_numeric(holder_df["Curr_Shares"], errors="coerce")
+
+holder_df["Net_Change"] = holder_df["Curr_Shares"] - holder_df["Prev_Shares"]
+
+holder_summary = (
+    holder_df.groupby("Stock Code")["Net_Change"]
+    .sum()
+    .reset_index()
+)
+
+# =====================================================
+# CLEAN MARKET DATA
+# =====================================================
+
+df.columns = df.columns.str.strip()
 
 numeric_cols = [
     'Close', 'Volume', 'Value', 'Free Float',
@@ -54,7 +101,7 @@ df.replace([np.inf, -np.inf], np.nan, inplace=True)
 df.fillna(0, inplace=True)
 
 # =====================================================
-# 📊 FEATURE ENGINEERING
+# FEATURE ENGINEERING
 # =====================================================
 
 df['Smart_Money'] = df['Value'] * df['Change %']
@@ -79,27 +126,14 @@ df['Accumulation_Persistence'] = (
 )
 
 # =====================================================
-# 🏦 HOLDER MOVEMENT
+# MERGE HOLDER
 # =====================================================
-
-holder_df['Jumlah Saham (Prev)'] = pd.to_numeric(holder_df['Jumlah Saham (Prev)'], errors='coerce')
-holder_df['Jumlah Saham (Curr)'] = pd.to_numeric(holder_df['Jumlah Saham (Curr)'], errors='coerce')
-
-holder_df['Net_Change'] = holder_df['Jumlah Saham (Curr)'] - holder_df['Jumlah Saham (Prev)']
-
-holder_summary = (
-    holder_df.groupby('Kode Efek')['Net_Change']
-    .sum()
-    .reset_index()
-)
-
-holder_summary.columns = ['Stock Code', 'Holder_Net_Change']
 
 df = df.merge(holder_summary, on='Stock Code', how='left')
-df['Holder_Net_Change'].fillna(0, inplace=True)
+df['Net_Change'].fillna(0, inplace=True)
 
 # =====================================================
-# 🎯 TARGET (5-Day Breakout >5%)
+# TARGET LABEL
 # =====================================================
 
 df['Future_Return'] = (
@@ -110,7 +144,7 @@ df['Future_Return'] = (
 df['Breakout_Target'] = np.where(df['Future_Return'] > 0.05, 1, 0)
 
 # =====================================================
-# 🤖 MACHINE LEARNING MODEL
+# ML MODEL
 # =====================================================
 
 feature_cols = [
@@ -119,7 +153,7 @@ feature_cols = [
     'Smart_Money_20D',
     'Float_Turnover',
     'Accumulation_Persistence',
-    'Holder_Net_Change'
+    'Net_Change'
 ]
 
 X = df[feature_cols].copy()
@@ -139,7 +173,7 @@ model.fit(X, y)
 df['Breakout_Prob_ML'] = model.predict_proba(X)[:, 1] * 100
 
 # =====================================================
-# 📊 DASHBOARD
+# DASHBOARD
 # =====================================================
 
 latest_date = df['Last Trading Date'].max()
@@ -159,50 +193,52 @@ st.dataframe(
         'Smart_Money_20D',
         'Accumulation_Persistence',
         'Float_Turnover',
-        'Holder_Net_Change'
+        'Net_Change'
     ]]
 )
 
 # =====================================================
-# 📈 SECTOR ROTATION
+# SECTOR ROTATION
 # =====================================================
 
 st.subheader("📊 Sector Money Rotation")
 
-sector_flow = (
-    latest_df.groupby('Sector')['Smart_Money_20D']
-    .sum()
-    .reset_index()
-)
+if "Sector" in latest_df.columns:
+    sector_flow = (
+        latest_df.groupby('Sector')['Smart_Money_20D']
+        .sum()
+        .reset_index()
+    )
 
-fig = px.treemap(
-    sector_flow,
-    path=['Sector'],
-    values='Smart_Money_20D',
-    color='Smart_Money_20D'
-)
+    fig = px.treemap(
+        sector_flow,
+        path=['Sector'],
+        values='Smart_Money_20D',
+        color='Smart_Money_20D'
+    )
 
-st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
 # =====================================================
-# ⚠ SAHAM MUDAH DIGERAKKAN
+# RISK DETECTOR
 # =====================================================
 
 st.subheader("⚠ Saham Mudah Digerakkan")
 
-goreng_risk = latest_df[
-    (latest_df['Float_Turnover'] > 0.05) &
-    (latest_df['Free Float'] < 40)
-].sort_values('Float_Turnover', ascending=False)
+if "Free Float" in latest_df.columns:
+    goreng_risk = latest_df[
+        (latest_df['Float_Turnover'] > 0.05) &
+        (latest_df['Free Float'] < 40)
+    ].sort_values('Float_Turnover', ascending=False)
 
-st.dataframe(
-    goreng_risk[[
-        'Stock Code',
-        'Close',
-        'Float_Turnover',
-        'Free Float',
-        'Breakout_Prob_ML'
-    ]].head(20)
-)
+    st.dataframe(
+        goreng_risk[[
+            'Stock Code',
+            'Close',
+            'Float_Turnover',
+            'Free Float',
+            'Breakout_Prob_ML'
+        ]].head(20)
+    )
 
-st.success("✅ System Stable • SaaS Mode Active")
+st.success("✅ SaaS Stable • No Column Crash • Production Safe")
