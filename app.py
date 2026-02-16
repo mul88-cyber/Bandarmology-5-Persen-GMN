@@ -123,42 +123,47 @@ def load_ksei():
         st.warning(f"⚠️ Data KSEI tidak tersedia: {e}")
         return pd.DataFrame()
 
-# =============================================================================
-# FUNGSI LOAD DATA MASTER 5% (CSV LIGHT)
-# =============================================================================
 @st.cache_data(ttl=86400, show_spinner="Loading data kepemilikan 5%...")
 def load_master_5():
-    """Load data master 5% dari CSV Light"""
+    """Load data master 5% - HANYA menggunakan CSV Light yang sudah terbukti berfungsi."""
+
+    # >>> GUNAKAN FILE ID CSV LIGHT ANDA DI SINI <<<
+    csv_light_id = '13Fj_EUhFuDI5LKZDBA1wmvGJPfVDWo6k'
+
     try:
-        df = load_csv_from_gdrive(FILE_IDS['master_5_light'])
-        
+        # Panggil fungsi load_csv_from_gdrive yang sudah ada
+        df = load_csv_from_gdrive(csv_light_id)
+
         if df is None or df.empty:
-            st.error("❌ Data kepemilikan 5% tidak tersedia")
+            st.error("❌ Data kepemilikan 5% (CSV Light) tidak tersedia atau kosong.")
             return pd.DataFrame()
-        
+
         # Parsing tanggal
         if 'Tanggal_Data' in df.columns:
             df['Tanggal_Data'] = pd.to_datetime(df['Tanggal_Data'], errors='coerce')
             df = df.dropna(subset=['Tanggal_Data'])
-        
-        # Konversi numerik
+
+        # Konversi numerik untuk kolom-kolom penting
         numeric_cols = ['Jumlah Saham (Curr)', 'Perubahan_Saham', 'Close_Price', 'Estimasi_Nilai']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        # Pastikan kolom boolean ada
+
+        # Pastikan kolom boolean terdefinisi dengan baik (isi NaN dengan False)
         bool_cols = ['Is_Adaro', 'Is_LKH', 'Is_Saratoga', 'Is_Nominee', 'Is_Foreign']
         for col in bool_cols:
             if col in df.columns:
-                df[col] = df[col].astype(bool)
-        
-        st.sidebar.success(f"✅ Data 5%: {len(df):,} baris")
+                df[col] = df[col].fillna(False).astype(bool)
+
+        st.sidebar.success(f"✅ Data 5%: {len(df):,} baris (dari CSV Light)")
         return df
-        
+
     except Exception as e:
-        st.error(f"❌ Gagal load data 5%: {e}")
+        st.error(f"❌ Gagal load data 5% dari CSV Light: {e}")
+        # Opsional: tampilkan traceback untuk debugging lebih lanjut
+        # st.exception(e)
         return pd.DataFrame()
+
 
 # =============================================================================
 # FORMATTER ANGKA
