@@ -9,21 +9,20 @@ from io import StringIO, BytesIO
 import time
 
 # =============================================================================
-# KONFIGURASI: LINK GOOGLE DRIVE (FILE SUDAH PRE-PROCESSED DI COLAB)
+# KONFIGURASI: LINK GOOGLE DRIVE
 # =============================================================================
-# File ID untuk dataset yang sudah di-clean (format PARQUET recommended)
 FILE_IDS = {
     'harian': '1t_wCljhepGBqZVrvleuZKldomQKop9DY',           # Kompilasi_Data_1Tahun.csv
     'ksei': '1eTUIC120SHTCzvBk77Q87w0X56F2HkWz',             # KSEI_Shareholder_Processed.csv
-    'master_5_parquet': '1tb1umgJc1giaKYyMNuQWhH7R8cH75s2X', # GANTI DENGAN FILE ID PARQUET ANDA!
-    'master_5_light': '10CS5QJU5MHafIpanEH9XU6SpCEOVd-pb'    # GANTI DENGAN FILE ID CSV LIGHT ANDA!
+    'master_5_parquet': '1tb1umgJc1giaKYyMNuQWhH7R8cH75s2X', # Master 5% Parquet
+    'master_5_light': '10CS5QJU5MHafIpanEH9XU6SpCEOVd-pb'    # Master 5% CSV Light
 }
 
 # =============================================================================
-# FUNGSI LOAD DATA DENGAN RETRY & FALLBACK
+# FUNGSI LOAD DATA
 # =============================================================================
 def load_csv_from_gdrive(file_id, max_retries=3):
-    """Load CSV dari Google Drive dengan multiple fallback method"""
+    """Load CSV dari Google Drive"""
     url = f"https://drive.google.com/uc?export=download&id={file_id}"
     
     for attempt in range(max_retries):
@@ -58,13 +57,11 @@ def load_csv_from_gdrive(file_id, max_retries=3):
     raise Exception(f"Gagal load file ID {file_id}")
 
 def load_parquet_from_gdrive(file_id):
-    """Load Parquet dari Google Drive (paling cepat)"""
+    """Load Parquet dari Google Drive"""
     try:
         url = f"https://drive.google.com/uc?export=download&id={file_id}"
         response = requests.get(url, timeout=30)
         response.raise_for_status()
-        
-        # Simpan ke BytesIO dan baca dengan pd.read_parquet
         buffer = BytesIO(response.content)
         df = pd.read_parquet(buffer)
         return df
@@ -73,1084 +70,1004 @@ def load_parquet_from_gdrive(file_id):
         return None
 
 # =============================================================================
-# CACHE DATA LOADING (OPTIMUM UNTUK STREAMLIT CLOUD)
+# CACHE DATA LOADING
 # =============================================================================
 @st.cache_data(ttl=3600, show_spinner="Loading data harian...")
 def load_harian():
-    """Load data harian (Kompilasi_Data_1Tahun)"""
+    """Load data harian"""
     try:
         df = load_csv_from_gdrive(FILE_IDS['harian'])
-        
-        # Parsing tanggal
         df['Last Trading Date'] = pd.to_datetime(df['Last Trading Date'], errors='coerce')
         df = df.dropna(subset=['Last Trading Date'])
-        
-        # Konversi numerik
-        numeric_cols = ['Close', 'Volume', 'Value', 'Foreign Buy', 'Foreign Sell', 
-                        'Bid Volume', 'Offer Volume', 'Avg_Order_Volume', 'MA50_AOVol',
-                        'Volume Spike (x)', 'Bid/Offer Imbalance', 'Change %']
-        
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        
         return df
     except Exception as e:
         st.error(f"❌ Gagal load data harian: {e}")
-        return pd.DataFrame(columns=['Stock Code', 'Last Trading Date', 'Close'])
+        return pd.DataFrame()
 
 @st.cache_data(ttl=86400, show_spinner="Loading data KSEI...")
 def load_ksei():
-    """Load data KSEI bulanan"""
+    """Load data KSEI"""
     try:
         df = load_csv_from_gdrive(FILE_IDS['ksei'])
-        
-        # Parsing tanggal
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-        df = df.dropna(subset=['Date'])
-        
-        # Konversi numerik
-        for col in df.columns:
-            if 'Chg' in col or 'Vol' in col or 'Val' in col or col in ['Price', 'Avg_Price']:
-                df[col] = pd.to_datetime(df[col], errors='coerce') if 'Date' in col else pd.to_numeric(df[col], errors='coerce')
-        
         return df
     except Exception as e:
         st.error(f"❌ Gagal load data KSEI: {e}")
-        return pd.DataFrame(columns=['Code', 'Date', 'Top_Buyer', 'Top_Seller'])
+        return pd.DataFrame()
 
-@st.cache_data(ttl=86400, show_spinner="Loading data kepemilikan 5% (CLEAN)...")
+@st.cache_data(ttl=86400, show_spinner="Loading data kepemilikan 5%...")
 def load_master_5():
-    """
-    LOAD DATA MASTER 5% YANG SUDAH DI-CLEAN DI COLAB
-    PRIORITAS: Parquet -> CSV Light -> Original + Clean On The Fly
-    """
-    
-    # 1. COBA LOAD PARQUET (PALING CEPAT)
+    """Load data master 5%"""
+    # Prioritaskan Parquet
     if 'master_5_parquet' in FILE_IDS:
         df = load_parquet_from_gdrive(FILE_IDS['master_5_parquet'])
         if df is not None:
-            # Pastikan kolom tanggal dalam format datetime
             if 'Tanggal_Data' in df.columns:
                 df['Tanggal_Data'] = pd.to_datetime(df['Tanggal_Data'], errors='coerce')
-                df = df.dropna(subset=['Tanggal_Data'])
-            
-            # Pastikan kolom numerik
-            numeric_cols = ['Jumlah Saham (Prev)', 'Jumlah Saham (Curr)', 'Perubahan_Saham', 
-                           'Close_Price', 'Estimasi_Nilai']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            st.success("✅ Load data 5% (Parquet) - SUPER CEPAT!")
+            st.success("✅ Load data 5% (Parquet)")
             return df
     
-    # 2. FALLBACK: LOAD CSV LIGHT
-    if 'master_5_light' in FILE_IDS:
-        try:
-            df = load_csv_from_gdrive(FILE_IDS['master_5_light'])
-            df['Tanggal_Data'] = pd.to_datetime(df['Tanggal_Data'], errors='coerce')
-            df = df.dropna(subset=['Tanggal_Data'])
-            st.success("✅ Load data 5% (CSV Light)")
-            return df
-        except:
-            pass
-    
-    # 3. FALLBACK TERAKHIR: LOAD ORIGINAL + CLEAN SEDERHANA
-    st.warning("⚠️ Load data original. Pastikan Anda sudah menjalankan script cleaning di Colab!")
+    # Fallback ke CSV
     try:
-        df = load_csv_from_gdrive(FILE_IDS['master_5'])
+        df = load_csv_from_gdrive(FILE_IDS['master_5_light'])
         df['Tanggal_Data'] = pd.to_datetime(df['Tanggal_Data'], errors='coerce')
-        df = df.dropna(subset=['Tanggal_Data'])
-        
-        # Hitung kolom dasar
-        df['Perubahan_Saham'] = df['Jumlah Saham (Curr)'] - df['Jumlah Saham (Prev)']
-        df['Aksi'] = 'Tahan'
-        df.loc[df['Perubahan_Saham'] > 0, 'Aksi'] = 'Beli'
-        df.loc[df['Perubahan_Saham'] < 0, 'Aksi'] = 'Jual'
-        df['Estimasi_Nilai'] = df['Perubahan_Saham'] * df['Close_Price']
-        
+        st.success("✅ Load data 5% (CSV)")
         return df
-    except Exception as e:
-        st.error(f"❌ Gagal load data master 5%: {e}")
-        return pd.DataFrame(columns=['Kode Efek', 'Tanggal_Data', 'UBO'])
+    except:
+        st.warning("⚠️ Data 5% tidak tersedia")
+        return pd.DataFrame()
 
 # =============================================================================
-# FORMATTER ANGKA (SUPAYA ENAK DIBACA)
+# FUNGSI KALKULASI ADVANCED METRICS
+# =============================================================================
+
+def calculate_float_pressure(df):
+    """
+    1️⃣ Float Pressure & Liquidity Stress Analysis
+    """
+    df = df.copy()
+    
+    # A. Float Turnover Ratio (Daily Volume / Tradeable Shares)
+    df['Float_Turnover_Ratio'] = df['Volume'] / (df['Tradeble Shares'] + 1)
+    
+    # B. Float Market Cap Turnover (Value / Float Market Cap)
+    df['Float_MCap'] = df['Close'] * df['Tradeble Shares']
+    df['Float_MCap_Turnover'] = df['Value'] / (df['Float_MCap'] + 1)
+    
+    # C. Liquidity Score (Composite)
+    # Komponen: 
+    # 1. Volume vs MA20 (higher = better liquidity)
+    # 2. Float Turnover (higher = better liquidity)
+    # 3. Free Float % (higher = better liquidity)
+    
+    # Normalize each component to 0-100 scale
+    vol_ratio = df['Volume'] / (df['MA20_vol'] + 1)
+    vol_score = np.clip(vol_ratio * 20, 0, 100)  # Volume 5x MA20 = 100
+    
+    float_turnover_score = np.clip(df['Float_Turnover_Ratio'] * 10000, 0, 100)  # Turnover 1% = 100
+    
+    free_float_score = df['Free Float']  # Already in percentage
+    
+    # Composite Liquidity Score (0-100)
+    df['Liquidity_Score'] = (
+        vol_score * 0.4 +
+        float_turnover_score * 0.3 +
+        free_float_score * 0.3
+    )
+    
+    # Classification
+    conditions = [
+        df['Liquidity_Score'] < 20,
+        df['Liquidity_Score'] < 40,
+        df['Liquidity_Score'] < 60,
+        df['Liquidity_Score'] >= 60
+    ]
+    choices = ['💀 Sangat Kering (High Risk)', '⚠️ Kering', '🟡 Normal', '💧 Likuid']
+    df['Liquidity_Status'] = np.select(conditions, choices, default='Unknown')
+    
+    # High Manipulation Risk Flag
+    df['High_Manipulation_Risk'] = (
+        (df['Free Float'] < 30) & 
+        (df['Float_Turnover_Ratio'] < 0.005) & 
+        (df['Liquidity_Score'] < 30)
+    ).astype(int)
+    
+    return df
+
+def calculate_smart_money_accumulation(df):
+    """
+    2️⃣ Smart Money Accumulation Detection
+    """
+    df = df.copy()
+    
+    # Foreign Net
+    if 'Foreign Buy' in df.columns and 'Foreign Sell' in df.columns:
+        df['Foreign_Net'] = df['Foreign Buy'] - df['Foreign Sell']
+    else:
+        df['Foreign_Net'] = 0
+    
+    # 20-day rolling sum of foreign net
+    df['SMF_20D'] = df.groupby('Stock Code')['Foreign_Net'].transform(
+        lambda x: x.rolling(20, min_periods=5).sum()
+    )
+    
+    # Smart Money Accumulation Flags
+    conditions = [
+        # Strong Accumulation
+        (df['Volume'] > df['MA20_vol'] * 2) & 
+        (df['Change %'].abs() < 3) & 
+        (df['Foreign_Net'] > 0) &
+        (df['SMF_20D'] > 0),
+        
+        # Moderate Accumulation
+        (df['Volume'] > df['MA20_vol'] * 1.5) & 
+        (df['Change %'].abs() < 5) & 
+        (df['Foreign_Net'] > 0),
+        
+        # Possible Accumulation
+        (df['Volume'] > df['MA20_vol']) & 
+        (df['Foreign_Net'] > 0)
+    ]
+    choices = ['💪 Strong Accumulation', '📈 Moderate Accumulation', '👀 Possible Accumulation']
+    
+    df['Smart_Money_Signal'] = np.select(conditions, choices, default='-')
+    
+    # Smart Money Score (0-100)
+    score = 0
+    if 'Volume' in df.columns and 'MA20_vol' in df.columns:
+        vol_factor = np.clip((df['Volume'] / df['MA20_vol']) * 10, 0, 40)
+        score += vol_factor
+    
+    if 'Foreign_Net' in df.columns:
+        foreign_pos = (df['Foreign_Net'] > 0).astype(int) * 30
+        score += foreign_pos
+    
+    if 'SMF_20D' in df.columns:
+        smf_pos = (df['SMF_20D'] > 0).astype(int) * 30
+        score += smf_pos
+    
+    df['Smart_Money_Score'] = np.clip(score, 0, 100)
+    
+    return df
+
+def calculate_holder_movement(df_harian, df_master):
+    """
+    3️⃣ Big Holder Movement (Game Changer)
+    """
+    if df_master.empty:
+        return df_harian
+    
+    df = df_harian.copy()
+    
+    # Aggregate holder changes per stock
+    holder_agg = df_master.groupby('Kode Efek').agg({
+        'Perubahan_Saham': 'sum',
+        'Jumlah Saham (Curr)': 'last'
+    }).reset_index()
+    holder_agg.columns = ['Stock Code', 'Holder_Total_Change', 'Holder_Current_Total']
+    
+    df = df.merge(holder_agg, on='Stock Code', how='left')
+    df['Holder_Total_Change'] = df['Holder_Total_Change'].fillna(0)
+    df['Holder_Current_Total'] = df['Holder_Current_Total'].fillna(0)
+    
+    # Calculate % of listed shares
+    df['Holder_Change_Pct_Listed'] = (df['Holder_Total_Change'] / (df['Listed Shares'] + 1)) * 100
+    
+    # Stealth Accumulation Detection
+    conditions = [
+        # Strong Stealth Accumulation
+        (df['Holder_Total_Change'] > 0) &
+        (df['Holder_Change_Pct_Listed'] > 0.5) &  # >0.5% of listed shares
+        (df['Change %'].abs() < 3) &  # Price sideways
+        (df['Volume'] > df['MA20_vol'] * 1.2),  # Volume increasing
+        
+        # Moderate Stealth Accumulation
+        (df['Holder_Total_Change'] > 0) &
+        (df['Holder_Change_Pct_Listed'] > 0.25) &
+        (df['Change %'].abs() < 5) &
+        (df['Volume'] > df['MA20_vol']),
+        
+        # Possible Accumulation
+        (df['Holder_Total_Change'] > 0) &
+        (df['Change %'].abs() < 7)
+    ]
+    choices = ['🎯 Strong Stealth Accumulation', '📊 Moderate Accumulation', '👀 Possible Accumulation']
+    
+    df['Holder_Movement_Signal'] = np.select(conditions, choices, default='-')
+    
+    # Holder Score
+    holder_score = 0
+    if 'Holder_Change_Pct_Listed' in df.columns:
+        holder_score += np.clip(df['Holder_Change_Pct_Listed'] * 20, 0, 40)  # 2.5% change = 50
+    
+    if 'Volume' in df.columns and 'MA20_vol' in df.columns:
+        vol_ratio = df['Volume'] / df['MA20_vol']
+        holder_score += np.clip((vol_ratio - 1) * 20, 0, 30)  # Volume 2x = +20
+    
+    price_sideways = (df['Change %'].abs() < 3).astype(int) * 30
+    holder_score += price_sideways
+    
+    df['Holder_Score'] = np.clip(holder_score, 0, 100)
+    
+    return df
+
+def calculate_foreign_dominance(df):
+    """
+    4️⃣ Foreign Flow Dominance Model
+    """
+    df = df.copy()
+    
+    if 'Foreign Buy' in df.columns and 'Foreign Sell' in df.columns and 'Value' in df.columns:
+        df['Foreign_Net'] = df['Foreign Buy'] - df['Foreign Sell']
+        df['Foreign_Total'] = df['Foreign Buy'] + df['Foreign Sell']
+        
+        # Foreign Dominance (% of total value)
+        df['Foreign_Dominance'] = (df['Foreign_Total'] / (df['Value'] + 1)) * 100
+        df['Foreign_Net_Ratio'] = df['Foreign_Net'] / (df['Foreign_Total'] + 1)
+        
+        # Classification
+        conditions = [
+            df['Foreign_Dominance'] > 40,
+            df['Foreign_Dominance'] > 25,
+            df['Foreign_Dominance'] > 10,
+            df['Foreign_Dominance'] <= 10
+        ]
+        choices = ['🔥 Sangat Dominan (>40%)', '💪 Dominan (25-40%)', '👀 Moderate (10-25%)', '💤 Rendah (<10%)']
+        df['Foreign_Dominance_Level'] = np.select(conditions, choices, default='Unknown')
+        
+        # Foreign Sentiment (based on net)
+        sentiment_conditions = [
+            (df['Foreign_Net_Ratio'] > 0.3) & (df['Foreign_Net'] > 0),
+            (df['Foreign_Net_Ratio'] > 0) & (df['Foreign_Net'] > 0),
+            (df['Foreign_Net_Ratio'] < -0.3) & (df['Foreign_Net'] < 0),
+            (df['Foreign_Net_Ratio'] < 0) & (df['Foreign_Net'] < 0)
+        ]
+        sentiment_choices = ['🚀 Very Strong Buy', '📈 Net Buy', '📉 Net Sell', '🔻 Very Strong Sell']
+        df['Foreign_Sentiment'] = np.select(sentiment_conditions, sentiment_choices, default='⚖️ Neutral')
+        
+        # Foreign Dominance Score
+        df['Foreign_Score'] = np.clip(df['Foreign_Dominance'] * 2, 0, 100)  # 50% dominance = 100
+    else:
+        df['Foreign_Dominance'] = 0
+        df['Foreign_Sentiment'] = 'Data Tidak Tersedia'
+        df['Foreign_Score'] = 0
+    
+    return df
+
+def calculate_ubo_control_index(df_harian, df_master):
+    """
+    5️⃣ UBO Control Index (Advanced)
+    """
+    if df_master.empty:
+        return df_harian
+    
+    df = df_harian.copy()
+    
+    # Get top 5 holders per stock from latest data
+    latest_date = df_master['Tanggal_Data'].max()
+    df_latest = df_master[df_master['Tanggal_Data'] == latest_date]
+    
+    # Calculate top 5 concentration
+    top_holders = df_latest.groupby('Kode Efek').apply(
+        lambda x: x.nlargest(5, 'Jumlah Saham (Curr)')['Jumlah Saham (Curr)'].sum()
+    ).reset_index()
+    top_holders.columns = ['Stock Code', 'Top5_Total_Shares']
+    
+    df = df.merge(top_holders, on='Stock Code', how='left')
+    df['Top5_Total_Shares'] = df['Top5_Total_Shares'].fillna(0)
+    
+    # Concentration Ratio
+    df['Concentration_Ratio'] = (df['Top5_Total_Shares'] / (df['Listed Shares'] + 1)) * 100
+    
+    # High Control Stock Flag
+    df['High_Control_Stock'] = (
+        (df['Concentration_Ratio'] > 60) &
+        (df['Free Float'] < 35) &
+        (df['Volume'] / (df['Tradeble Shares'] + 1) < 0.003)
+    ).astype(int)
+    
+    # Control Score
+    control_score = 0
+    control_score += np.clip(df['Concentration_Ratio'] * 0.8, 0, 40)  # 50% = 40
+    control_score += (100 - df['Free Float']) * 0.4  # Low float = high control
+    control_score += np.clip((1 - df['Volume'] / (df['Tradeble Shares'] + 1) * 1000) * 20, 0, 20)
+    
+    df['Control_Score'] = np.clip(control_score, 0, 100)
+    
+    return df
+
+def calculate_float_domination_score(df):
+    """
+    6️⃣ FLOAT DOMINATION SCORE (Composite Ultimate Indicator)
+    """
+    df = df.copy()
+    
+    # Ensure all component scores exist
+    required_scores = ['Liquidity_Score', 'Smart_Money_Score', 'Holder_Score', 
+                      'Foreign_Score', 'Control_Score']
+    
+    for score in required_scores:
+        if score not in df.columns:
+            df[score] = 0
+    
+    # Weight configuration
+    weights = {
+        'Liquidity_Score': 0.20,      # 20% - How tradable?
+        'Smart_Money_Score': 0.25,     # 25% - Is smart money moving?
+        'Holder_Score': 0.20,           # 20% - Are big holders accumulating?
+        'Foreign_Score': 0.20,          # 20% - Foreign dominance?
+        'Control_Score': 0.15           # 15% - Is stock easily controlled?
+    }
+    
+    # Calculate weighted score
+    df['Float_Domination_Score'] = 0
+    for score, weight in weights.items():
+        df['Float_Domination_Score'] += df[score] * weight
+    
+    # Classification
+    conditions = [
+        df['Float_Domination_Score'] >= 80,
+        df['Float_Domination_Score'] >= 70,
+        df['Float_Domination_Score'] >= 60,
+        df['Float_Domination_Score'] >= 50,
+        df['Float_Domination_Score'] < 50
+    ]
+    choices = [
+        '🚀 PRIME - Perfect Setup',
+        '💪 STRONG - Ready to Move',
+        '📈 GOOD - Watch Closely',
+        '👀 WATCH - Potential',
+        '💤 SLEEP - No Signal'
+    ]
+    df['Domination_Level'] = np.select(conditions, choices, default='Unknown')
+    
+    # Detailed recommendation
+    rec_conditions = [
+        (df['Float_Domination_Score'] >= 75) & (df['Smart_Money_Score'] >= 70) & (df['Holder_Score'] >= 60),
+        (df['Float_Domination_Score'] >= 65) & (df['Foreign_Score'] >= 50),
+        (df['Float_Domination_Score'] >= 60) & (df['Control_Score'] >= 70),
+        (df['Float_Domination_Score'] >= 50) & (df['Liquidity_Score'] < 30),
+        df['Float_Domination_Score'] < 50
+    ]
+    rec_choices = [
+        '🎯 STRONG BUY - Institutional Quality',
+        '📈 BUY - Foreign Accumulation',
+        '👀 SPEC BUY - High Control Stock',
+        '⚠️ WATCH - Manipulation Risk',
+        '⏸️ HOLD - Wait for Signal'
+    ]
+    df['Float_Domination_Recommendation'] = np.select(rec_conditions, rec_choices, default='🤔 Neutral')
+    
+    return df
+
+# =============================================================================
+# FORMATTER FUNCTIONS
 # =============================================================================
 def format_rupiah(angka):
-    """Format angka ke Rupiah dengan separator titik"""
     if pd.isna(angka) or angka == 0:
         return "Rp 0"
     return f"Rp {angka:,.0f}".replace(",", ".")
 
 def format_lembar(angka):
-    """Format lembar saham dengan separator titik"""
     if pd.isna(angka) or angka == 0:
         return "0"
     return f"{angka:,.0f}".replace(",", ".")
 
 def format_persen(angka):
-    """Format persentase dengan 2 desimal"""
     if pd.isna(angka):
         return "0.00%"
     return f"{angka:.2f}%"
+
+def format_float(x):
+    if pd.isna(x):
+        return "0.00"
+    return f"{x:.2f}"
 
 # =============================================================================
 # KONFIGURASI HALAMAN
 # =============================================================================
 st.set_page_config(
-    page_title="Bandar Eye IDX - Professional",
+    page_title="Bandar Eye IDX - Institutional Grade",
     page_icon="🐋",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
 # =============================================================================
-# SIDEBAR: FILTER GLOBAL
+# LOAD ALL DATA
 # =============================================================================
-st.sidebar.image("https://img.icons8.com/fluency/96/whale.png", width=80)
-st.sidebar.title("🐋 Bandar Eye")
-st.sidebar.caption("v2.0 - Clean Architecture | 20 Tahun Cycle Experience")
-
-# Load semua data
 with st.spinner('Memuat data harga...'):
     df_harian = load_harian()
 with st.spinner('Memuat data KSEI...'):
     df_ksei = load_ksei()
-with st.spinner('Memuat data kepemilikan 5% (Clean)...'):
+with st.spinner('Memuat data kepemilikan 5%...'):
     df_master = load_master_5()
 
-# Cek apakah data berhasil di-load
 if df_harian.empty:
     st.error("⚠️ Data harian tidak tersedia. Dashboard tidak dapat berjalan.")
     st.stop()
 
-if df_master.empty:
-    st.warning("⚠️ Data kepemilikan 5% tidak tersedia. Tab 3 tidak akan berfungsi penuh.")
+# =============================================================================
+# APPLY ALL ADVANCED CALCULATIONS
+# =============================================================================
+with st.spinner('Menganalisis Float Pressure...'):
+    df_harian = calculate_float_pressure(df_harian)
 
-# Debug info di sidebar
-with st.sidebar.expander("🔧 System Status"):
-    st.write(f"**Data Harian:** {len(df_harian):,} baris")
-    st.write(f"**Data KSEI:** {len(df_ksei):,} baris")
-    st.write(f"**Data 5%:** {len(df_master):,} baris")
-    
-    if 'UBO' in df_master.columns:
-        st.write(f"**UBO Unik:** {df_master['UBO'].nunique():,}")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Adaro", df_master['Is_Adaro'].sum() if 'Is_Adaro' in df_master.columns else 0)
-            st.metric("LKH", df_master['Is_LKH'].sum() if 'Is_LKH' in df_master.columns else 0)
-        with col2:
-            st.metric("Saratoga", df_master['Is_Saratoga'].sum() if 'Is_Saratoga' in df_master.columns else 0)
-            st.metric("Nominee", df_master['Is_Nominee'].sum() if 'Is_Nominee' in df_master.columns else 0)
+with st.spinner('Mendeteksi Smart Money...'):
+    df_harian = calculate_smart_money_accumulation(df_harian)
 
-# Date range global
+with st.spinner('Menganalisis Pergerakan Holder...'):
+    df_harian = calculate_holder_movement(df_harian, df_master)
+
+with st.spinner('Menghitung Foreign Dominance...'):
+    df_harian = calculate_foreign_dominance(df_harian)
+
+with st.spinner('Menghitung UBO Control Index...'):
+    df_harian = calculate_ubo_control_index(df_harian, df_master)
+
+with st.spinner('Menghitung Float Domination Score...'):
+    df_harian = calculate_float_domination_score(df_harian)
+
+# =============================================================================
+# SIDEBAR
+# =============================================================================
+st.sidebar.image("https://img.icons8.com/fluency/96/whale.png", width=80)
+st.sidebar.title("🐋 Bandar Eye")
+st.sidebar.caption("v3.0 - Float Domination Edition")
+
+# Date filters
 min_date = df_harian['Last Trading Date'].min()
 max_date = df_harian['Last Trading Date'].max()
 
-st.sidebar.markdown("---")
 st.sidebar.subheader("📅 Filter Tanggal")
 start_date = st.sidebar.date_input("Dari", min_date, min_value=min_date, max_value=max_date)
 end_date = st.sidebar.date_input("Sampai", max_date, min_value=min_date, max_value=max_date)
 
-# Filter sektor
+# Sector filter
 if 'Sector' in df_harian.columns:
     sektor_list = sorted(df_harian['Sector'].dropna().unique())
     selected_sectors = st.sidebar.multiselect("🏭 Sektor", sektor_list, default=[])
 else:
     selected_sectors = []
-    st.sidebar.warning("Kolom 'Sector' tidak ditemukan")
 
+# Quick filters
 st.sidebar.markdown("---")
-st.sidebar.caption("© Bandarmology IDX - Institutional Grade")
+st.sidebar.subheader("⚡ Quick Filter")
+
+quick_filter = st.sidebar.selectbox(
+    "Preset Filter",
+    ["All Stocks", 
+     "🚀 Prime Setup (Score >80)", 
+     "💪 Strong Accumulation", 
+     "🔥 High Manipulation Risk",
+     "🎯 Stealth Accumulation",
+     "🌍 Foreign Dominant"]
+)
+
+# Apply date filter
+df_filtered = df_harian[
+    (df_harian['Last Trading Date'] >= pd.to_datetime(start_date)) &
+    (df_harian['Last Trading Date'] <= pd.to_datetime(end_date))
+].copy()
+
+if selected_sectors:
+    df_filtered = df_filtered[df_filtered['Sector'].isin(selected_sectors)]
+
+# Apply quick filter
+if quick_filter == "🚀 Prime Setup (Score >80)":
+    df_filtered = df_filtered[df_filtered['Float_Domination_Score'] >= 80]
+elif quick_filter == "💪 Strong Accumulation":
+    df_filtered = df_filtered[df_filtered['Smart_Money_Signal'] == '💪 Strong Accumulation']
+elif quick_filter == "🔥 High Manipulation Risk":
+    df_filtered = df_filtered[df_filtered['High_Manipulation_Risk'] == 1]
+elif quick_filter == "🎯 Stealth Accumulation":
+    df_filtered = df_filtered[df_filtered['Holder_Movement_Signal'] == '🎯 Strong Stealth Accumulation']
+elif quick_filter == "🌍 Foreign Dominant":
+    df_filtered = df_filtered[df_filtered['Foreign_Dominance_Level'] == '🔥 Sangat Dominan (>40%)']
 
 # =============================================================================
-# MAIN APP: 4 TAB
+# MAIN DASHBOARD
 # =============================================================================
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📈 Momentum Bandar", 
-    "🏦 KSEI Big Money", 
-    "🕵️ Akumulasi Awal (UBO Clustered)", 
-    "📊 Watchlist & Konvergensi"
+st.title("🐋 Bandar Eye IDX - Institutional Grade")
+st.caption(f"Data terakhir: {max_date.strftime('%d %B %Y')} | Total Saham: {df_filtered['Stock Code'].nunique():,}")
+
+# Top metrics
+col1, col2, col3, col4, col5 = st.columns(5)
+with col1:
+    st.metric("🚀 Prime Setup", f"{len(df_filtered[df_filtered['Float_Domination_Score'] >= 80]):,}")
+with col2:
+    st.metric("💪 Strong Accum", f"{len(df_filtered[df_filtered['Smart_Money_Signal'] == '💪 Strong Accumulation']):,}")
+with col3:
+    st.metric("🎯 Stealth Accum", f"{len(df_filtered[df_filtered['Holder_Movement_Signal'] == '🎯 Strong Stealth Accumulation']):,}")
+with col4:
+    st.metric("🔥 High Risk", f"{len(df_filtered[df_filtered['High_Manipulation_Risk'] == 1]):,}")
+with col5:
+    st.metric("🌍 Foreign Dominant", f"{len(df_filtered[df_filtered['Foreign_Dominance_Level'] == '🔥 Sangat Dominan (>40%)']):,}")
+
+# =============================================================================
+# TABS
+# =============================================================================
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "🔥 FLOAT DOMINATION SCORE",
+    "📊 Market Microstructure",
+    "🏦 Smart Money Flow",
+    "👥 Holder Analysis",
+    "🌍 Foreign Flow",
+    "🎯 Scanner & Watchlist"
 ])
 
 # =============================================================================
-# TAB 1: MOMENTUM BANDAR (Harian)
+# TAB 1: FLOAT DOMINATION SCORE (MAIN INDICATOR)
 # =============================================================================
 with tab1:
-    st.header("📈 Momentum & Anomali Bandar")
-    st.caption("Deteksi akumulasi/distribusi dari data harian (Volume Spike + AOVol Anomaly)")
+    st.header("🔥 FLOAT DOMINATION SCORE - Ultimate Indicator")
+    st.caption("Composite score dari 5 komponen: Liquidity, Smart Money, Holder Movement, Foreign Flow, dan Control Index")
     
-    col1, col2, col3 = st.columns(3)
+    # Top stocks by Float Domination Score
+    top_domination = df_filtered.nlargest(50, 'Float_Domination_Score')
+    
+    col1, col2 = st.columns([2, 1])
     
     with col1:
-        min_volume_spike = st.slider("Min Volume Spike (x)", 0.0, 5.0, 1.5, 0.1)
-    with col2:
-        min_ao_ratio = st.slider("Min AOVol Ratio (vs MA50)", 0.0, 5.0, 2.0, 0.1)
-    with col3:
-        min_imbalance = st.slider("Min Bid/Offer Imbalance", -1.0, 1.0, 0.1, 0.05)
-    
-    # Filter data
-    df_filtered = df_harian[
-        (df_harian['Last Trading Date'] >= pd.to_datetime(start_date)) &
-        (df_harian['Last Trading Date'] <= pd.to_datetime(end_date))
-    ].copy()
-    
-    if selected_sectors:
-        df_filtered = df_filtered[df_filtered['Sector'].isin(selected_sectors)]
-    
-    # Filter kondisi
-    filter_condition = pd.Series([True] * len(df_filtered))
-    
-    if 'Volume Spike (x)' in df_filtered.columns:
-        filter_condition &= (df_filtered['Volume Spike (x)'] >= min_volume_spike)
-    
-    if 'Avg_Order_Volume' in df_filtered.columns and 'MA50_AOVol' in df_filtered.columns:
-        ao_ratio = df_filtered['Avg_Order_Volume'] / df_filtered['MA50_AOVol'].replace(0, np.nan)
-        filter_condition &= (ao_ratio >= min_ao_ratio)
-    
-    if 'Bid/Offer Imbalance' in df_filtered.columns:
-        filter_condition &= (df_filtered['Bid/Offer Imbalance'] >= min_imbalance)
-    
-    df_anomaly = df_filtered[filter_condition].copy()
-    
-    # Hitung potensi
-    df_anomaly['Potensi'] = 0
-    if 'Volume Spike (x)' in df_anomaly.columns:
-        df_anomaly['Potensi'] += df_anomaly['Volume Spike (x)'] * 0.3
-    if 'Avg_Order_Volume' in df_anomaly.columns and 'MA50_AOVol' in df_anomaly.columns:
-        ao_ratio_val = df_anomaly['Avg_Order_Volume'] / df_anomaly['MA50_AOVol'].replace(0, np.nan)
-        df_anomaly['Potensi'] += ao_ratio_val.fillna(0) * 0.4
-    if 'Bid/Offer Imbalance' in df_anomaly.columns:
-        df_anomaly['Potensi'] += (df_anomaly['Bid/Offer Imbalance'] + 1) * 0.3
-    
-    df_anomaly = df_anomaly.sort_values('Potensi', ascending=False)
-    
-    st.subheader(f"🎯 {len(df_anomaly)} Saham dengan Aktivitas Bandar Terdeteksi")
-    
-    if not df_anomaly.empty:
-        # Kolom display
-        display_cols = ['Stock Code', 'Last Trading Date']
-        optional_cols = ['Close', 'Change %', 'Volume Spike (x)', 'Avg_Order_Volume', 
-                        'MA50_AOVol', 'Bid/Offer Imbalance', 'Net Foreign Flow', 
-                        'Final Signal', 'Potensi']
+        st.subheader("🏆 Top 50 Stocks by Float Domination Score")
         
-        for col in optional_cols:
-            if col in df_anomaly.columns:
-                display_cols.append(col)
+        display_cols = ['Stock Code', 'Close', 'Change %', 'Float_Domination_Score', 
+                       'Domination_Level', 'Float_Domination_Recommendation',
+                       'Liquidity_Status', 'Smart_Money_Signal', 'Holder_Movement_Signal']
+        
+        # Filter to existing columns
+        display_cols = [c for c in display_cols if c in top_domination.columns]
         
         st.dataframe(
-            df_anomaly[display_cols].head(100),
+            top_domination[display_cols].head(50),
             use_container_width=True,
             hide_index=True,
             column_config={
                 'Close': st.column_config.NumberColumn(format="Rp %d"),
                 'Change %': st.column_config.NumberColumn(format="%.2f%%"),
-                'Volume Spike (x)': st.column_config.NumberColumn(format="%.1fx"),
-                'Avg_Order_Volume': st.column_config.NumberColumn(format="%.0f"),
-                'Bid/Offer Imbalance': st.column_config.NumberColumn(format="%.2f"),
-                'Net Foreign Flow': st.column_config.NumberColumn(format="Rp %d"),
-                'Potensi': st.column_config.NumberColumn(format="%.2f")
+                'Float_Domination_Score': st.column_config.NumberColumn(format="%.1f")
             }
         )
-        
-        # Scatter plot
-        st.subheader("📊 Volume Spike vs AOVol Ratio")
-        
-        if ('Volume Spike (x)' in df_anomaly.columns and 
-            'Avg_Order_Volume' in df_anomaly.columns and 
-            'MA50_AOVol' in df_anomaly.columns and
-            'Final Signal' in df_anomaly.columns):
-            
-            df_scatter = df_anomaly.head(50).copy()
-            df_scatter['AOVol_Ratio'] = df_scatter['Avg_Order_Volume'] / df_scatter['MA50_AOVol'].replace(0, np.nan)
-            df_scatter = df_scatter.dropna(subset=['Volume Spike (x)', 'AOVol_Ratio', 'Final Signal'])
-            
-            if not df_scatter.empty:
-                fig = px.scatter(
-                    df_scatter,
-                    x='Volume Spike (x)',
-                    y='AOVol_Ratio',
-                    color='Final Signal',
-                    size='Potensi' if 'Potensi' in df_scatter.columns else None,
-                    hover_data=['Stock Code', 'Close'] if 'Close' in df_scatter.columns else ['Stock Code'],
-                    title="Semakin ke kanan atas = Semakin kuat akumulasi"
-                )
-                fig.update_layout(height=500)
-                st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Tidak ada saham dengan kriteria tersebut. Coba turunkan threshold.")
-
-# =============================================================================
-# TAB 2: KSEI BIG MONEY TRACKER (Bulanan)
-# =============================================================================
-with tab2:
-    st.header("🏦 Jejak Big Money (KSEI Bulanan)")
-    st.caption("Institusi yang akumulasi/distribusi besar dalam sebulan")
     
-    if df_ksei.empty:
-        st.warning("Data KSEI tidak tersedia.")
-    else:
-        df_ksei_filtered = df_ksei[
-            (df_ksei['Date'] >= pd.to_datetime(start_date)) &
-            (df_ksei['Date'] <= pd.to_datetime(end_date))
-        ]
-        
-        top_n = st.slider("Top N Buyer/Seller", 5, 30, 15)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("🟢 Top Buyer (Volume)")
-            if 'Top_Buyer_Vol' in df_ksei_filtered.columns:
-                top_buyers = df_ksei_filtered.nlargest(top_n, 'Top_Buyer_Vol')[['Code', 'Date', 'Top_Buyer', 'Top_Buyer_Vol', 'Top_Buyer_Val']]
-                st.dataframe(
-                    top_buyers,
-                    column_config={
-                        'Top_Buyer_Vol': st.column_config.NumberColumn(format="%d lot"),
-                        'Top_Buyer_Val': st.column_config.NumberColumn(format="Rp %d")
-                    },
-                    use_container_width=True,
-                    hide_index=True
-                )
-        
-        with col2:
-            st.subheader("🔴 Top Seller (Volume)")
-            if 'Top_Seller_Vol' in df_ksei_filtered.columns:
-                top_sellers = df_ksei_filtered.nsmallest(top_n, 'Top_Seller_Vol')[['Code', 'Date', 'Top_Seller', 'Top_Seller_Vol', 'Top_Seller_Val']]
-                st.dataframe(
-                    top_sellers,
-                    column_config={
-                        'Top_Seller_Vol': st.column_config.NumberColumn(format="%d lot"),
-                        'Top_Seller_Val': st.column_config.NumberColumn(format="Rp %d")
-                    },
-                    use_container_width=True,
-                    hide_index=True
-                )
-        
-        st.subheader("🔍 Detail Saham")
-        kode_saham = st.text_input("Masukkan Kode Saham (contoh: AADI, BBCA)", "").upper()
-        
-        if kode_saham:
-            df_detail = df_ksei_filtered[df_ksei_filtered['Code'] == kode_saham].sort_values('Date', ascending=False)
-            if not df_detail.empty:
-                cols_detail = ['Date', 'Price', 'Total_Local', 'Total_Foreign', 
-                              'Top_Buyer', 'Top_Buyer_Vol', 'Top_Seller', 'Top_Seller_Vol']
-                cols_detail = [c for c in cols_detail if c in df_detail.columns]
-                st.dataframe(
-                    df_detail[cols_detail].head(12),
-                    use_container_width=True,
-                    hide_index=True
-                )
-            else:
-                st.warning(f"Data tidak ditemukan untuk {kode_saham}")
-
-# =============================================================================
-# TAB 3: AKUMULASI AWAL DARI DATA 5% (UBO CLUSTERED - CLEAN VERSION)
-# =============================================================================
-with tab3:
-    st.header("🕵️ DETEKSI AKUMULASI AWAL (UBO Clustered)")
-    st.markdown("""
-    > **Bandarmology Intelligence**: Data sudah di-cluster per **Ultimate Beneficial Owner (UBO)**.
-    > *PT ADARO STRATEGIC INVESTMENTS*, *U20B2S3 A90G4...*, *ADARO STRATEGIC INVESTMENTS PT* → **1 entitas: ADARO** ✅
-    """)
-    
-    if df_master.empty:
-        st.warning("⚠️ Data kepemilikan 5% tidak tersedia. Jalankan script cleaning di Colab terlebih dahulu.")
-        st.stop()
-    
-    # Pastikan kolom UBO ada
-    if 'UBO' not in df_master.columns:
-        st.warning("⚠️ Kolom 'UBO' tidak ditemukan. Pastikan Anda sudah menjalankan script cleaning di Colab.")
-        st.info("Mencoba menggunakan kolom 'Nama Pemegang Saham' sebagai fallback...")
-        df_master['UBO'] = df_master['Nama Pemegang Saham']
-        df_master['Rekening_Bersih'] = df_master['Nama Rekening Efek']
-    
-    # Filter tanggal
-    df_master_filtered = df_master[
-        (df_master['Tanggal_Data'] >= pd.to_datetime(start_date)) &
-        (df_master['Tanggal_Data'] <= pd.to_datetime(end_date))
-    ].copy()
-    
-    if df_master_filtered.empty:
-        st.warning("Tidak ada data kepemilikan 5% pada periode yang dipilih.")
-        st.stop()
-    
-    # Filter sektor
-    if selected_sectors and 'Sector' not in df_master_filtered.columns:
-        if 'Kode Efek' in df_master_filtered.columns and 'Sector' in df_harian.columns:
-            sector_map = df_harian[['Stock Code', 'Sector']].drop_duplicates('Stock Code')
-            df_master_filtered = df_master_filtered.merge(sector_map, left_on='Kode Efek', right_on='Stock Code', how='left')
-    
-    if selected_sectors and 'Sector' in df_master_filtered.columns:
-        df_master_filtered = df_master_filtered[df_master_filtered['Sector'].isin(selected_sectors)]
-    
-    # =========================================================================
-    # PARAMETER DETEKSI AKUMULASI AWAL
-    # =========================================================================
-    st.subheader("⚙️ Parameter Akumulasi Awal")
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        min_beli = st.number_input("Minimal Beli (lembar)", min_value=1000, value=100000, step=10000, 
-                                   help="Filter pembelian minimal", format="%d")
     with col2:
-        lookback_days = st.number_input("Lookback (hari)", min_value=7, max_value=90, value=30, 
-                                       help="Dalam X hari terakhir")
-    with col3:
-        min_freq = st.number_input("Minimal Frekuensi", min_value=1, max_value=20, value=2,
-                                  help="Minimal berapa kali transaksi")
-    
-    cutoff_date = pd.to_datetime(end_date) - timedelta(days=lookback_days)
-    
-    # =========================================================================
-    # DETEKSI AKUMULASI AWAL PER UBO - VERSI FIX (ANTI ERROR)
-    # =========================================================================
-    df_beli = df_master_filtered[
-        (df_master_filtered['Aksi'] == 'Beli') &
-        (df_master_filtered['Perubahan_Saham'] >= min_beli) &
-        (df_master_filtered['Tanggal_Data'] >= cutoff_date)
-    ].copy()
-    
-    if not df_beli.empty:
-        # --- METHOD 1: AGGRESSI DENGAN NAMA KOLOM EKSPLISIT (LEBIH AMAN) ---
+        st.subheader("📊 Score Distribution")
         
-        # 1. Groupby dan hitung agregasi SATU PER SATU
-        df_akumulasi = df_beli.groupby(['UBO', 'Kode Efek']).agg({
-            'Perubahan_Saham': 'sum',
-            'Estimasi_Nilai': 'sum',
-            'Tanggal_Data': ['first', 'last', 'count']
-        }).reset_index()
+        # Histogram
+        fig = px.histogram(
+            df_filtered,
+            x='Float_Domination_Score',
+            nbins=20,
+            title="Distribusi Float Domination Score",
+            labels={'Float_Domination_Score': 'Score'}
+        )
+        fig.add_vline(x=80, line_dash="dash", line_color="green", annotation_text="Prime")
+        fig.add_vline(x=60, line_dash="dash", line_color="orange", annotation_text="Good")
+        st.plotly_chart(fig, use_container_width=True)
         
-        # 2. Flatten column names dengan cara AMAN
-        # Kolom hasil groupby akan seperti: ('Perubahan_Saham', 'sum'), dll
-        df_akumulasi.columns = [
-            'UBO', 'Kode Efek',
-            'Total_Beli_Lembar', 'Total_Nilai_Rp',
-            'Tgl_Pertama', 'Tgl_Terakhir', 'Frekuensi_Transaksi'
-        ]
-        
-        # 3. Tambahkan kolom tambahan secara TERPISAH (jika ada)
-        if 'Rekening_Bersih' in df_beli.columns:
-            rekening_list = df_beli.groupby(['UBO', 'Kode Efek'])['Rekening_Bersih'].apply(lambda x: list(x.unique())).reset_index()
-            rekening_list.columns = ['UBO', 'Kode Efek', 'Daftar_Rekening']
-            df_akumulasi = df_akumulasi.merge(rekening_list, on=['UBO', 'Kode Efek'], how='left')
-            df_akumulasi['Jumlah_Rekening'] = df_akumulasi['Daftar_Rekening'].apply(lambda x: len(x) if isinstance(x, list) else 0)
-        
-        if 'Pemegang_Bersih' in df_beli.columns:
-            pemegang_first = df_beli.groupby(['UBO', 'Kode Efek'])['Pemegang_Bersih'].first().reset_index()
-            pemegang_first.columns = ['UBO', 'Kode Efek', 'Pemegang_Saham']
-            df_akumulasi = df_akumulasi.merge(pemegang_first, on=['UBO', 'Kode Efek'], how='left')
-        
-        if 'Is_Adaro' in df_beli.columns:
-            adaro_flag = df_beli.groupby(['UBO', 'Kode Efek'])['Is_Adaro'].first().reset_index()
-            adaro_flag.columns = ['UBO', 'Kode Efek', 'Is_Adaro']
-            df_akumulasi = df_akumulasi.merge(adaro_flag, on=['UBO', 'Kode Efek'], how='left')
-        
-        if 'Is_LKH' in df_beli.columns:
-            lkh_flag = df_beli.groupby(['UBO', 'Kode Efek'])['Is_LKH'].first().reset_index()
-            lkh_flag.columns = ['UBO', 'Kode Efek', 'Is_LKH']
-            df_akumulasi = df_akumulasi.merge(lkh_flag, on=['UBO', 'Kode Efek'], how='left')
-        
-        if 'Is_Saratoga' in df_beli.columns:
-            saratoga_flag = df_beli.groupby(['UBO', 'Kode Efek'])['Is_Saratoga'].first().reset_index()
-            saratoga_flag.columns = ['UBO', 'Kode Efek', 'Is_Saratoga']
-            df_akumulasi = df_akumulasi.merge(saratoga_flag, on=['UBO', 'Kode Efek'], how='left')
-        
-        # 4. Skor Akumulasi Awal
-        df_akumulasi['Skor_Akumulasi'] = (
-            np.log1p(df_akumulasi['Total_Beli_Lembar']) * 0.5 +
-            np.log1p(df_akumulasi['Frekuensi_Transaksi']) * 0.3 +
-            (1 - (df_akumulasi['Tgl_Terakhir'] - df_akumulasi['Tgl_Pertama']).dt.days / lookback_days) * 0.2
+        # Score breakdown for selected stock
+        st.subheader("🔍 Score Breakdown")
+        selected_stock = st.selectbox(
+            "Pilih Saham untuk Breakdown",
+            options=top_domination['Stock Code'].head(20).tolist()
         )
         
-        # 5. Filter frekuensi minimal
-        df_akumulasi = df_akumulasi[df_akumulasi['Frekuensi_Transaksi'] >= min_freq]
-        df_akumulasi = df_akumulasi.sort_values('Skor_Akumulasi', ascending=False)
+        if selected_stock:
+            stock_data = df_filtered[df_filtered['Stock Code'] == selected_stock].iloc[0]
+            
+            # Radar chart for components
+            components = pd.DataFrame({
+                'Component': ['Liquidity', 'Smart Money', 'Holder', 'Foreign', 'Control'],
+                'Score': [
+                    stock_data['Liquidity_Score'],
+                    stock_data['Smart_Money_Score'],
+                    stock_data['Holder_Score'],
+                    stock_data['Foreign_Score'],
+                    stock_data['Control_Score']
+                ]
+            })
+            
+            fig = px.line_polar(
+                components,
+                r='Score',
+                theta='Component',
+                line_close=True,
+                range_r=[0, 100],
+                title=f"Score Components - {selected_stock}"
+            )
+            fig.update_traces(fill='toself')
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Show all signals
+            st.write(f"**Domination Level:** {stock_data['Domination_Level']}")
+            st.write(f"**Recommendation:** {stock_data['Float_Domination_Recommendation']}")
+            st.write(f"**Liquidity:** {stock_data['Liquidity_Status']}")
+            st.write(f"**Smart Money:** {stock_data['Smart_Money_Signal']}")
+            st.write(f"**Holder Movement:** {stock_data['Holder_Movement_Signal']}")
+            st.write(f"**Foreign:** {stock_data['Foreign_Sentiment']} ({stock_data['Foreign_Dominance_Level']})")
+
+# =============================================================================
+# TAB 2: MARKET MICROSTRUCTURE (Float Pressure & Liquidity)
+# =============================================================================
+with tab2:
+    st.header("📊 Market Microstructure Analysis")
+    st.caption("Float Pressure, Liquidity Stress, dan Manipulation Risk")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("💧 Liquidity Analysis")
         
-        # 6. Merge dengan sektor
-        if 'Sector' not in df_akumulasi.columns and 'Kode Efek' in df_akumulasi.columns:
-            sector_map = df_harian[['Stock Code', 'Sector']].drop_duplicates('Stock Code')
-            df_akumulasi = df_akumulasi.merge(sector_map, left_on='Kode Efek', right_on='Stock Code', how='left')
+        # Filter by liquidity status
+        liq_status = st.multiselect(
+            "Filter by Liquidity Status",
+            ['💀 Sangat Kering (High Risk)', '⚠️ Kering', '🟡 Normal', '💧 Likuid'],
+            default=['💀 Sangat Kering (High Risk)', '⚠️ Kering']
+        )
         
-        # =========================================================================
-        # TAMPILKAN HASIL AKUMULASI AWAL
-        # =========================================================================
-        st.subheader(f"🎯 {len(df_akumulasi)} Indikasi Akumulasi Awal (per UBO)")
-        st.caption("Semakin tinggi Skor = Semakin agresif akumulasi dalam waktu singkat")
+        liq_df = df_filtered[df_filtered['Liquidity_Status'].isin(liq_status)]
         
-        if not df_akumulasi.empty:
-            # Display format
-            df_display = df_akumulasi.copy()
-            df_display['Total_Beli_Lembar_Display'] = df_display['Total_Beli_Lembar'].apply(format_lembar)
-            df_display['Total_Nilai_Rp_Display'] = df_display['Total_Nilai_Rp'].apply(format_rupiah)
-            df_display['Skor_Display'] = df_display['Skor_Akumulasi'].apply(lambda x: f"{x:.2f}")
-            
-            # Kolom display
-            display_columns = ['UBO', 'Kode Efek']
-            if 'Sector' in df_display.columns:
-                display_columns.append('Sector')
-            display_columns.extend(['Total_Beli_Lembar_Display', 'Total_Nilai_Rp_Display', 
-                                   'Frekuensi_Transaksi', 'Tgl_Pertama', 'Tgl_Terakhir', 'Skor_Display'])
-            
-            if 'Jumlah_Rekening' in df_display.columns:
-                display_columns.insert(6, 'Jumlah_Rekening')
-            
-            # Filter cepat
-            col_filter1, col_filter2, col_filter3 = st.columns(3)
-            with col_filter1:
-                show_adaro = st.checkbox("🎯 Hanya Adaro Group", value=False)
-            with col_filter2:
-                show_lkh = st.checkbox("👑 Hanya Lo Kheng Hong", value=False)
-            with col_filter3:
-                show_saratoga = st.checkbox("📊 Hanya Saratoga", value=False)
-            
-            df_filtered_display = df_display.copy()
-            if show_adaro and 'Is_Adaro' in df_display.columns:
-                df_filtered_display = df_filtered_display[df_filtered_display['Is_Adaro'] == True]
-            if show_lkh and 'Is_LKH' in df_display.columns:
-                df_filtered_display = df_filtered_display[df_filtered_display['Is_LKH'] == True]
-            if show_saratoga and 'Is_Saratoga' in df_display.columns:
-                df_filtered_display = df_filtered_display[df_filtered_display['Is_Saratoga'] == True]
-            
+        st.dataframe(
+            liq_df[['Stock Code', 'Close', 'Volume', 'Free Float', 
+                   'Float_Turnover_Ratio', 'Liquidity_Score', 'Liquidity_Status']].head(30),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                'Close': st.column_config.NumberColumn(format="Rp %d"),
+                'Volume': st.column_config.NumberColumn(format="%d"),
+                'Float_Turnover_Ratio': st.column_config.NumberColumn(format="%.4f"),
+                'Liquidity_Score': st.column_config.NumberColumn(format="%.1f")
+            }
+        )
+    
+    with col2:
+        st.subheader("🔥 High Manipulation Risk Stocks")
+        
+        risk_df = df_filtered[df_filtered['High_Manipulation_Risk'] == 1]
+        
+        st.metric("Total High Risk Stocks", len(risk_df))
+        
+        if not risk_df.empty:
             st.dataframe(
-                df_filtered_display[display_columns].head(50),
-                column_config={
-                    'UBO': st.column_config.TextColumn("Ultimate Beneficial Owner", width="large"),
-                    'Total_Beli_Lembar_Display': st.column_config.TextColumn("Total Beli (Lembar)"),
-                    'Total_Nilai_Rp_Display': st.column_config.TextColumn("Estimasi Nilai"),
-                    'Frekuensi_Transaksi': st.column_config.NumberColumn("Frekuensi", format="%d"),
-                    'Jumlah_Rekening': st.column_config.NumberColumn("Jml Rekening"),
-                    'Tgl_Pertama': st.column_config.DateColumn(format="DD-MM-YY"),
-                    'Tgl_Terakhir': st.column_config.DateColumn(format="DD-MM-YY"),
-                    'Skor_Display': st.column_config.TextColumn("Skor")
-                },
+                risk_df[['Stock Code', 'Close', 'Free Float', 'Float_Turnover_Ratio', 
+                        'Liquidity_Score', 'Control_Score']].head(30),
                 use_container_width=True,
                 hide_index=True
             )
             
-            # =========================================================================
-            # TOP 10 AKUMULATOR
-            # =========================================================================
-            st.subheader("💰 Top 10 UBO Akumulator Terbesar (Nilai Rp)")
-            top10 = df_akumulasi.nlargest(10, 'Total_Nilai_Rp').copy()
-            top10['Label'] = top10['UBO'].apply(lambda x: x[:30] + '...' if len(x) > 30 else x)
-            top10['Nilai_Display'] = top10['Total_Nilai_Rp'].apply(format_rupiah)
-            
-            fig = px.bar(
-                top10,
-                x='Total_Nilai_Rp',
-                y='Label',
-                color='Sector' if 'Sector' in top10.columns else None,
-                orientation='h',
-                title="Total Nilai Pembelian (Estimasi) per UBO",
-                labels={'Total_Nilai_Rp': 'Nilai (Rp)', 'Label': 'Ultimate Beneficial Owner'},
-                hover_data={'Total_Nilai_Rp': False, 'Nilai_Display': True, 'Kode Efek': True}
+            # Scatter plot: Free Float vs Turnover
+            fig = px.scatter(
+                risk_df.head(100),
+                x='Free Float',
+                y='Float_Turnover_Ratio',
+                color='Liquidity_Score',
+                hover_name='Stock Code',
+                title="High Risk Stocks: Free Float vs Turnover",
+                labels={'Free Float': 'Free Float %', 'Float_Turnover_Ratio': 'Turnover Ratio'}
             )
-            fig.update_layout(height=500)
-            fig.update_xaxes(tickformat=",.0f")
             st.plotly_chart(fig, use_container_width=True)
-            
-            # =============================================================================
-            # DEEP DIVE: MULTI-LINE CHART PER UBO + HARGA (SECONDARY AXIS)
-            # =============================================================================
-            st.subheader("📈 DEEP DIVE: Perbandingan Akumulasi per UBO + Harga")
-            st.caption("**Multi-line chart**: Setiap Ultimate Beneficial Owner (UBO) adalah 1 garis. Garis merah putus-putus = Harga (secondary axis)")
-            
-            col_a, col_b, col_c = st.columns([2, 1, 1])
-            
-            with col_a:
-                stock_options = sorted(df_master_filtered['Kode Efek'].unique())
-                selected_stock_dd = st.selectbox(
-                    "Pilih Kode Efek untuk Deep Dive",
-                    stock_options,
-                    index=0 if len(stock_options) > 0 else None
-                )
-            
-            with col_b:
-                ubo_filter = st.selectbox(
-                    "Filter UBO",
-                    ["Semua UBO", "Hanya Adaro Group", "Hanya LKH", "Hanya Saratoga", "Non-Nominee"],
-                    index=0
-                )
-            
-            with col_c:
-                weekly_option = st.selectbox(
-                    "Interval",
-                    ["Weekly", "Bi-Weekly", "Monthly"],
-                    index=0
-                )
-            
-            # Frekuensi resample
-            freq_map = {"Weekly": "W", "Bi-Weekly": "2W", "Monthly": "ME"}
-            freq = freq_map[weekly_option]
-            
-            if selected_stock_dd:
-                # ============= DATA KEPEMILIKAN =============
-                df_all_ubo = df_master_filtered[
-                    df_master_filtered['Kode Efek'] == selected_stock_dd
-                ].copy()
-                
-                # ============= DATA HARGA =============
-                df_harga = df_harian[
-                    df_harian['Stock Code'] == selected_stock_dd
-                ].sort_values('Last Trading Date').copy()
-                
-                if not df_all_ubo.empty and not df_harga.empty:
-                    # Filter UBO
-                    all_ubos = df_all_ubo['UBO'].unique()
-                    
-                    if ubo_filter == "Hanya Adaro Group":
-                        all_ubos = [u for u in all_ubos if 'ADARO' in str(u).upper()]
-                    elif ubo_filter == "Hanya LKH":
-                        all_ubos = [u for u in all_ubos if 'LO KHENG HONG' in str(u).upper()]
-                    elif ubo_filter == "Hanya Saratoga":
-                        all_ubos = [u for u in all_ubos if 'SARATOGA' in str(u).upper()]
-                    elif ubo_filter == "Non-Nominee":
-                        all_ubos = [u for u in all_ubos if 'NOMINEE' not in str(u).upper()]
-                    
-                    if len(all_ubos) == 0:
-                        st.warning("Tidak ada UBO dengan filter tersebut.")
-                    else:
-                        st.info(f"Menampilkan {len(all_ubos)} Ultimate Beneficial Owner")
-                        
-                        # ============= BUAT FIGURE DUAL AXIS =============
-                        fig_deep = go.Figure()
-                        
-                        # --- SET 1: LINE CHART KEPEMILIKAN (Primary Axis - Kiri) ---
-                        colors = px.colors.qualitative.Plotly + px.colors.qualitative.Alphabet * 5
-                        
-                        for idx, ubo in enumerate(all_ubos[:10]):  # Maks 10 UBO agar tidak terlalu padat
-                            df_ubo = df_all_ubo[df_all_ubo['UBO'] == ubo].sort_values('Tanggal_Data')
-                            
-                            if len(df_ubo) >= 2:
-                                # Resample ke weekly
-                                df_ubo.set_index('Tanggal_Data', inplace=True)
-                                df_ubo_weekly = df_ubo.resample(freq).last().dropna(subset=['Jumlah Saham (Curr)']).reset_index()
-                                df_ubo.reset_index(inplace=True)
-                                
-                                label = ubo[:20] + '...' if len(ubo) > 20 else ubo
-                                
-                                fig_deep.add_trace(go.Scatter(
-                                    x=df_ubo_weekly['Tanggal_Data'],
-                                    y=df_ubo_weekly['Jumlah Saham (Curr)'],
-                                    mode='lines+markers',
-                                    name=label,
-                                    line=dict(color=colors[idx % len(colors)], width=2.5),
-                                    marker=dict(size=6),
-                                    yaxis='y',  # Primary axis (kiri)
-                                    hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
-                                                 f'<span style="color:{colors[idx % len(colors)]}">●</span> {ubo}<br>' +
-                                                 'Kepemilikan: %{customdata}<extra></extra>',
-                                    customdata=df_ubo_weekly['Jumlah Saham (Curr)'].apply(format_lembar)
-                                ))
-                        
-                        # --- SET 2: LINE CHART HARGA (Secondary Axis - Kanan) ---
-                        df_harga.set_index('Last Trading Date', inplace=True)
-                        df_harga_weekly = df_harga.resample(freq).last().dropna(subset=['Close']).reset_index()
-                        df_harga.reset_index(inplace=True)
-                        
-                        fig_deep.add_trace(go.Scatter(
-                            x=df_harga_weekly['Last Trading Date'],
-                            y=df_harga_weekly['Close'],
-                            mode='lines+markers',
-                            name='💲 HARGA CLOSE',
-                            line=dict(color='#E74C3C', width=3, dash='dot'),
-                            marker=dict(size=8, symbol='diamond', color='#E74C3C'),
-                            yaxis='y2',  # Secondary axis (kanan)
-                            hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
-                                         '<span style="color:#E74C3C">💲</span> Harga: %{customdata}<extra></extra>',
-                            customdata=df_harga_weekly['Close'].apply(format_rupiah)
-                        ))
-                        
-                        # --- SET 3: VOLUME SPIKE (Marker di Harga) ---
-                        if 'Volume Spike (x)' in df_harga_weekly.columns:
-                            df_harga_weekly['Volume Spike (x)'] = pd.to_numeric(df_harga_weekly['Volume Spike (x)'], errors='coerce')
-                            spike = df_harga_weekly[df_harga_weekly['Volume Spike (x)'] > 1.5]
-                            if not spike.empty:
-                                fig_deep.add_trace(go.Scatter(
-                                    x=spike['Last Trading Date'],
-                                    y=spike['Close'],
-                                    mode='markers',
-                                    name='⚡ Volume Spike',
-                                    marker=dict(color='#F39C12', size=12, symbol='star'),
-                                    yaxis='y2',
-                                    hovertemplate='<b>%{x|%d-%m-%Y}</b><br>' +
-                                                 '<span style="color:#F39C12">⚡</span> Volume Spike: %{customdata:.1f}x<extra></extra>',
-                                    customdata=spike['Volume Spike (x)']
-                                ))
-                        
-                        # ============= UPDATE LAYOUT DUAL AXIS =============
-                        fig_deep.update_layout(
-                            title=f"<b>AKUMULASI vs HARGA</b> - {selected_stock_dd}",
-                            height=600,
-                            hovermode='x unified',
-                            legend=dict(
-                                orientation="h",
-                                yanchor="bottom",
-                                y=-0.35,
-                                xanchor="center",
-                                x=0.5,
-                                font=dict(size=11),
-                                itemsizing='constant'
-                            ),
-                            # Primary Axis (Kiri) - Kepemilikan
-                            yaxis=dict(
-                                title=dict(
-                                    text="Jumlah Saham (Lembar)",
-                                    font=dict(color='#2C3E50', size=13)
-                                ),
-                                tickformat=",.0f",
-                                gridcolor='lightgray',
-                                showgrid=True,
-                                color='#2C3E50'
-                            ),
-                            # Secondary Axis (Kanan) - Harga
-                            yaxis2=dict(
-                                title=dict(
-                                    text="Harga (Rp)",
-                                    font=dict(color='#E74C3C', size=13)
-                                ),
-                                tickformat=",.0f",
-                                overlaying='y',
-                                side='right',
-                                showgrid=False,
-                                color='#E74C3C'
-                            ),
-                            xaxis=dict(
-                                title="Tanggal",
-                                tickformat="%d-%m-%Y",
-                                gridcolor='lightgray'
-                            ),
-                            plot_bgcolor='white',
-                            paper_bgcolor='white',
-                            margin=dict(l=80, r=80, t=80, b=120)
-                        )
-                        
-                        # Tambahkan range slider untuk zoom temporal
-                        fig_deep.update_xaxes(rangeslider_visible=True, rangeslider_thickness=0.08)
-                        
-                        st.plotly_chart(fig_deep, use_container_width=True)
-                        
-                        # ============= METRIK RINGKASAN =============
-                        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                        
-                        with col_m1:
-                            # Harga terakhir
-                            last_price = df_harga['Close'].iloc[-1] if not df_harga.empty else 0
-                            prev_price = df_harga['Close'].iloc[-2] if len(df_harga) > 1 else last_price
-                            delta_price = ((last_price - prev_price) / prev_price * 100) if prev_price > 0 else 0
-                            st.metric(
-                                "Harga Terkini",
-                                format_rupiah(last_price),
-                                delta=f"{delta_price:.1f}%",
-                                delta_color="normal"
-                            )
-                        
-                        with col_m2:
-                            # Total UBO aktif
-                            st.metric("UBO Aktif", len(all_ubos))
-                        
-                        with col_m3:
-                            # Total volume spike (30 hari terakhir)
-                            if 'Volume Spike (x)' in df_harga.columns:
-                                spike_30d = df_harga[
-                                    (df_harga['Last Trading Date'] >= pd.to_datetime(end_date) - timedelta(days=30)) &
-                                    (df_harga['Volume Spike (x)'] > 1.5)
-                                ].shape[0]
-                                st.metric("Volume Spike (30d)", spike_30d)
-                            else:
-                                st.metric("Volume Spike (30d)", 0)
-                        
-                        with col_m4:
-                            # Rata-rata harga 20 hari
-                            ma20 = df_harga['Close'].tail(20).mean()
-                            st.metric("MA20", format_rupiah(ma20))
-                        
-                        # ============= TABEL RINGKASAN PER UBO =============
-                        with st.expander("📋 Lihat Ringkasan Aktivitas per Ultimate Beneficial Owner"):
-                            summary_data = []
-                            for ubo in all_ubos[:10]:  # Top 10 UBO
-                                df_ubo_sum = df_all_ubo[df_all_ubo['UBO'] == ubo].sort_values('Tanggal_Data')
-                                
-                                if not df_ubo_sum.empty:
-                                    first_date = df_ubo_sum['Tanggal_Data'].iloc[0]
-                                    last_date = df_ubo_sum['Tanggal_Data'].iloc[-1]
-                                    first_hold = df_ubo_sum['Jumlah Saham (Curr)'].iloc[0]
-                                    last_hold = df_ubo_sum['Jumlah Saham (Curr)'].iloc[-1]
-                                    change = last_hold - first_hold
-                                    change_pct = (change / first_hold * 100) if first_hold > 0 else 0
-                                    
-                                    total_beli = df_ubo_sum[df_ubo_sum['Perubahan_Saham'] > 0]['Perubahan_Saham'].sum()
-                                    total_jual = abs(df_ubo_sum[df_ubo_sum['Perubahan_Saham'] < 0]['Perubahan_Saham'].sum())
-                                    frekuensi = len(df_ubo_sum)
-                                    jml_rekening = df_ubo_sum['Rekening_Bersih'].nunique() if 'Rekening_Bersih' in df_ubo_sum.columns else 1
-                                    
-                                    summary_data.append({
-                                        'UBO': ubo[:30] + '...' if len(ubo) > 30 else ubo,
-                                        'Jml Rekening': jml_rekening,
-                                        'Periode': f"{first_date.strftime('%d/%m/%y')} - {last_date.strftime('%d/%m/%y')}",
-                                        'Kepemilikan Awal': format_lembar(first_hold),
-                                        'Kepemilikan Akhir': format_lembar(last_hold),
-                                        'Perubahan': format_lembar(change),
-                                        'Δ %': f"{change_pct:+.1f}%",
-                                        'Total Beli': format_lembar(total_beli),
-                                        'Total Jual': format_lembar(total_jual),
-                                        'Frekuensi': frekuensi
-                                    })
-                            
-                            df_summary = pd.DataFrame(summary_data)
-                            st.dataframe(df_summary, use_container_width=True, hide_index=True)
-                else:
-                    st.warning(f"Tidak ada data kepemilikan atau harga untuk {selected_stock_dd}")
 
 # =============================================================================
-# TAB 4: SCANNER SINYAL & DIVERGENSI (FIX FORMAT ANGKA)
+# TAB 3: SMART MONEY FLOW
+# =============================================================================
+with tab3:
+    st.header("🏦 Smart Money Accumulation Detection")
+    st.caption("Deteksi akumulasi smart money (foreign + volume spike + price stability)")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("💪 Strong Accumulation Candidates")
+        
+        strong_acc = df_filtered[df_filtered['Smart_Money_Signal'] == '💪 Strong Accumulation']
+        
+        st.metric("Total Strong Accumulation", len(strong_acc))
+        
+        if not strong_acc.empty:
+            st.dataframe(
+                strong_acc[['Stock Code', 'Close', 'Change %', 'Volume', 'MA20_vol',
+                           'Foreign_Net', 'SMF_20D', 'Smart_Money_Score']].head(30),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Close': st.column_config.NumberColumn(format="Rp %d"),
+                    'Change %': st.column_config.NumberColumn(format="%.2f%%"),
+                    'Foreign_Net': st.column_config.NumberColumn(format="Rp %d"),
+                    'SMF_20D': st.column_config.NumberColumn(format="Rp %d")
+                }
+            )
+    
+    with col2:
+        st.subheader("📈 Moderate Accumulation")
+        
+        mod_acc = df_filtered[df_filtered['Smart_Money_Signal'] == '📈 Moderate Accumulation']
+        
+        st.metric("Total Moderate Accumulation", len(mod_acc))
+        
+        if not mod_acc.empty:
+            st.dataframe(
+                mod_acc[['Stock Code', 'Close', 'Change %', 'Volume', 'Foreign_Net', 
+                        'Smart_Money_Score']].head(30),
+                use_container_width=True,
+                hide_index=True
+            )
+    
+    # Visualization
+    st.subheader("📊 Smart Money Score Distribution")
+    
+    fig = px.scatter(
+        df_filtered.nlargest(100, 'Smart_Money_Score'),
+        x='Change %',
+        y='Volume',
+        size='Smart_Money_Score',
+        color='Smart_Money_Signal',
+        hover_name='Stock Code',
+        title="Smart Money: Volume vs Price Change",
+        labels={'Change %': 'Price Change %', 'Volume': 'Volume'}
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# =============================================================================
+# TAB 4: HOLDER ANALYSIS (UBO Movement)
 # =============================================================================
 with tab4:
-    st.header("⚡ Scanner Sinyal & Divergensi")
-    st.caption("Deteksi anomali antara Pergerakan Harga vs Pergerakan Barang (5% Owner & Foreign)")
-
-    # Pilihan Sub-Menu
-    mode_scan = st.radio(
-        "Pilih Mode Analisa:",
-        ["💎 Hunter: Divergensi (Harga Turun, Akumulasi Naik)", 
-         "🗺️ Map: Foreign vs Local Flow", 
-         "📋 Watchlist Personal"],
-        horizontal=True
-    )
-
-    st.markdown("---")
-
-    # -------------------------------------------------------------------------
-    # MODE 1: DIVERGENCE HUNTER
-    # -------------------------------------------------------------------------
-    if mode_scan == "💎 Hunter: Divergensi (Harga Turun, Akumulasi Naik)":
-        st.subheader("💎 Deteksi Saham 'Salah Harga'")
-        st.info("Mencari saham yang harganya JATUH, tapi kepemilikan investor 5% (Big Player) malah BERTAMBAH.")
+    st.header("👥 Big Holder Movement Analysis")
+    st.caption("Deteksi pergerakan pemegang saham 5% (Ultimate Beneficial Owner)")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("🎯 Strong Stealth Accumulation")
         
-        col_p1, col_p2 = st.columns(2)
-        with col_p1:
-            lookback_div = st.slider("Periode Pantauan (Hari)", 5, 60, 20)
-        with col_p2:
-            min_price_drop = st.slider("Minimal Harga TURUN (%)", 0, 50, 5)
+        stealth_df = df_filtered[df_filtered['Holder_Movement_Signal'] == '🎯 Strong Stealth Accumulation']
         
-        if st.button("🔍 Scan Divergensi Sekarang"):
-            with st.spinner("Menganalisa korelasi Harga vs Akumulasi..."):
-                # 1. Siapkan Rentang Tanggal
-                end_date_div = df_harian['Last Trading Date'].max()
-                start_date_div = end_date_div - timedelta(days=lookback_div)
-                
-                # 2. Hitung Perubahan Harga
-                df_period = df_harian[
-                    (df_harian['Last Trading Date'] >= start_date_div) & 
-                    (df_harian['Last Trading Date'] <= end_date_div)
-                ].copy()
-                
-                price_start = df_period.sort_values('Last Trading Date').groupby('Stock Code')['Close'].first()
-                price_end = df_period.sort_values('Last Trading Date').groupby('Stock Code')['Close'].last()
-                
-                df_div = pd.DataFrame({'Price_Start': price_start, 'Price_End': price_end})
-                df_div['Price_Chg_Pct'] = (df_div['Price_End'] - df_div['Price_Start']) / df_div['Price_Start'] * 100
-                
-                df_div = df_div[df_div['Price_Chg_Pct'] <= -min_price_drop]
-                
-                # 3. Hitung Perubahan Kepemilikan 5%
-                if not df_master.empty:
-                    df_master_div = df_master[
-                        (df_master['Tanggal_Data'] >= start_date_div) & 
-                        (df_master['Tanggal_Data'] <= end_date_div)
-                    ].copy()
-                    
-                    grouped = df_master_div.groupby('Kode Efek')
-                    results = []
-                    
-                    for stock, group in grouped:
-                        group = group.sort_values('Tanggal_Data')
-                        if len(group['Tanggal_Data'].unique()) > 1:
-                            tgl_awal = group['Tanggal_Data'].min()
-                            total_awal = group[group['Tanggal_Data'] == tgl_awal]['Jumlah Saham (Curr)'].sum()
-                            
-                            tgl_akhir = group['Tanggal_Data'].max()
-                            total_akhir = group[group['Tanggal_Data'] == tgl_akhir]['Jumlah Saham (Curr)'].sum()
-                            
-                            if total_awal > 0:
-                                chg_pct = (total_akhir - total_awal) / total_awal * 100
-                                results.append({
-                                    'Stock Code': stock,
-                                    'Own_Chg_Pct': chg_pct,
-                                    'Own_Start': total_awal,
-                                    'Own_End': total_akhir
-                                })
-                    
-                    df_own_chg = pd.DataFrame(results)
-                    
-                    if not df_own_chg.empty:
-                        # 4. Gabungkan Data
-                        df_final = df_div.merge(df_own_chg, on='Stock Code', how='inner')
-                        df_final = df_final[df_final['Own_Chg_Pct'] > 0.1]
-                        df_final = df_final.sort_values('Own_Chg_Pct', ascending=False)
-                        
-                        st.success(f"Ditemukan {len(df_final)} saham mengalami Divergensi Bullish!")
-                        
-                        if not df_final.empty:
-                            # --- FORMATTING DISPLAY DENGAN SEPARATOR ---
-                            df_display = df_final.copy()
-                            df_display['Harga Awal'] = df_display['Price_Start'].apply(format_rupiah)
-                            df_display['Harga Akhir'] = df_display['Price_End'].apply(format_rupiah)
-                            df_display['Drop (%)'] = df_display['Price_Chg_Pct'].apply(lambda x: f"{x:.2f}%")
-                            
-                            df_display['Lembar Awal'] = df_display['Own_Start'].apply(format_lembar)
-                            df_display['Lembar Akhir'] = df_display['Own_End'].apply(format_lembar)
-                            df_display['Akumulasi (%)'] = df_display['Own_Chg_Pct'].apply(lambda x: f"+{x:.2f}%")
-
-                            st.dataframe(
-                                df_display[['Stock Code', 'Harga Awal', 'Harga Akhir', 'Drop (%)', 'Lembar Awal', 'Lembar Akhir', 'Akumulasi (%)']],
-                                hide_index=True,
-                                use_container_width=True
-                            )
-                            
-                            # Visualisasi Scatter
-                            fig_div = px.scatter(
-                                df_final,
-                                x='Price_Chg_Pct',
-                                y='Own_Chg_Pct',
-                                text='Stock Code',
-                                color='Own_Chg_Pct',
-                                title=f"Peta Divergensi (Lookback: {lookback_div} hari)",
-                                labels={'Price_Chg_Pct': 'Penurunan Harga (%)', 'Own_Chg_Pct': 'Kenaikan Kepemilikan 5% (%)'}
-                            )
-                            fig_div.update_traces(textposition='top center')
-                            fig_div.add_vline(x=-10, line_dash="dash", line_color="red")
-                            st.plotly_chart(fig_div, use_container_width=True)
-                    else:
-                        st.warning("Tidak ada data perubahan kepemilikan yang signifikan.")
-                else:
-                    st.error("Data Master 5% kosong.")
-
-    # -------------------------------------------------------------------------
-    # MODE 2: FOREIGN VS LOCAL FLOW MAP (Tidak perlu ubah format, krn grafik)
-    # -------------------------------------------------------------------------
-    elif mode_scan == "🗺️ Map: Foreign vs Local Flow":
-        st.subheader("🗺️ Peta Kekuatan: Asing vs Lokal")
+        st.metric("Total Stealth Accumulation", len(stealth_df))
         
-        days_avg = st.slider("Rata-rata Data (Hari Terakhir)", 1, 5, 1)
-        date_cutoff = df_harian['Last Trading Date'].max() - timedelta(days=days_avg*2)
-        df_flow = df_harian[df_harian['Last Trading Date'] >= date_cutoff].copy()
+        if not stealth_df.empty:
+            st.dataframe(
+                stealth_df[['Stock Code', 'Close', 'Change %', 'Volume', 
+                           'Holder_Change_Pct_Listed', 'Holder_Score', 'Control_Score']].head(30),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Holder_Change_Pct_Listed': st.column_config.NumberColumn(format="%.2f%%"),
+                    'Holder_Score': st.column_config.NumberColumn(format="%.1f")
+                }
+            )
+    
+    with col2:
+        st.subheader("📊 Moderate Accumulation")
         
-        df_flow_agg = df_flow.groupby('Stock Code').agg({
-            'Change %': 'mean',
-            'Net Foreign Flow': 'mean',
-            'Close': 'last',
-            'Value': 'mean'
-        }).reset_index()
+        mod_holder = df_filtered[df_filtered['Holder_Movement_Signal'] == '📊 Moderate Accumulation']
         
-        min_val = st.number_input("Min Value Transaksi Harian (Rp Miliar)", 0.5, 50.0, 1.0) * 1e9
-        df_flow_agg = df_flow_agg[df_flow_agg['Value'] >= min_val]
+        st.metric("Total Moderate Accumulation", len(mod_holder))
         
-        def classify_flow(row):
-            if row['Change %'] > 0 and row['Net Foreign Flow'] > 0: return "Foreign Driven Up"
-            elif row['Change %'] > 0 and row['Net Foreign Flow'] < 0: return "Local Markup"
-            elif row['Change %'] < 0 and row['Net Foreign Flow'] > 0: return "Foreign Dip Buy"
-            elif row['Change %'] < 0 and row['Net Foreign Flow'] < 0: return "Distribution"
-            return "Neutral"
-
-        df_flow_agg['Status'] = df_flow_agg.apply(classify_flow, axis=1)
-        
-        fig_flow = px.scatter(
-            df_flow_agg,
-            x='Net Foreign Flow',
-            y='Change %',
-            color='Status',
-            size='Value',
-            hover_name='Stock Code',
-            title=f"Market Structure Map (Avg {days_avg} Hari)",
-            color_discrete_map={
-                "Foreign Driven Up": "green", "Local Markup": "orange",
-                "Foreign Dip Buy": "blue", "Distribution": "red"
+        if not mod_holder.empty:
+            st.dataframe(
+                mod_holder[['Stock Code', 'Close', 'Holder_Change_Pct_Listed', 
+                           'Holder_Score']].head(30),
+                use_container_width=True,
+                hide_index=True
+            )
+    
+    # UBO Control Index
+    st.subheader("🎮 UBO Control Index (High Control Stocks)")
+    
+    high_control = df_filtered[df_filtered['High_Control_Stock'] == 1]
+    
+    st.metric("Total High Control Stocks", len(high_control))
+    
+    if not high_control.empty:
+        st.dataframe(
+            high_control[['Stock Code', 'Close', 'Free Float', 'Concentration_Ratio',
+                         'Control_Score', 'Liquidity_Status']].head(30),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                'Concentration_Ratio': st.column_config.NumberColumn(format="%.1f%%")
             }
         )
-        fig_flow.add_vline(x=0, line_width=1, line_color="black")
-        fig_flow.add_hline(y=0, line_width=1, line_color="black")
-        st.plotly_chart(fig_flow, use_container_width=True)
 
-    # -------------------------------------------------------------------------
-    # MODE 3: WATCHLIST PERSONAL (FIX FORMAT)
-    # -------------------------------------------------------------------------
-    else:
+# =============================================================================
+# TAB 5: FOREIGN FLOW
+# =============================================================================
+with tab5:
+    st.header("🌍 Foreign Flow Dominance Model")
+    st.caption("Analisis dominasi dan sentimen investor asing")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("🔥 Sangat Dominan (>40%)")
+        
+        dom_df = df_filtered[df_filtered['Foreign_Dominance_Level'] == '🔥 Sangat Dominan (>40%)']
+        
+        st.metric("Total Sangat Dominan", len(dom_df))
+        
+        if not dom_df.empty:
+            st.dataframe(
+                dom_df[['Stock Code', 'Close', 'Change %', 'Foreign_Dominance',
+                       'Foreign_Sentiment', 'Foreign_Score']].head(30),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Foreign_Dominance': st.column_config.NumberColumn(format="%.1f%%")
+                }
+            )
+    
+    with col2:
+        st.subheader("💪 Dominan (25-40%)")
+        
+        mod_dom = df_filtered[df_filtered['Foreign_Dominance_Level'] == '💪 Dominan (25-40%)']
+        
+        st.metric("Total Dominan", len(mod_dom))
+        
+        if not mod_dom.empty:
+            st.dataframe(
+                mod_dom[['Stock Code', 'Close', 'Foreign_Dominance', 
+                        'Foreign_Sentiment']].head(30),
+                use_container_width=True,
+                hide_index=True
+            )
+    
+    # Foreign Sentiment Distribution
+    st.subheader("📊 Foreign Sentiment Distribution")
+    
+    sentiment_counts = df_filtered['Foreign_Sentiment'].value_counts().reset_index()
+    sentiment_counts.columns = ['Sentiment', 'Count']
+    
+    fig = px.pie(
+        sentiment_counts,
+        values='Count',
+        names='Sentiment',
+        title="Distribusi Sentimen Asing",
+        color_discrete_sequence=px.colors.qualitative.Set3
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Foreign Net vs Price Change
+    st.subheader("📈 Foreign Net vs Price Change")
+    
+    foreign_scatter = df_filtered.nlargest(200, 'Foreign_Score').copy()
+    foreign_scatter['Foreign_Net_Display'] = foreign_scatter['Foreign_Net'] / 1e9  # Convert to billions
+    
+    fig = px.scatter(
+        foreign_scatter,
+        x='Foreign_Net_Display',
+        y='Change %',
+        color='Foreign_Sentiment',
+        size='Foreign_Score',
+        hover_name='Stock Code',
+        title="Foreign Net (Rp Miliar) vs Price Change %",
+        labels={'Foreign_Net_Display': 'Foreign Net (Rp Miliar)', 'Change %': 'Price Change %'}
+    )
+    fig.add_vline(x=0, line_dash="dash", line_color="gray")
+    fig.add_hline(y=0, line_dash="dash", line_color="gray")
+    st.plotly_chart(fig, use_container_width=True)
+
+# =============================================================================
+# TAB 6: SCANNER & WATCHLIST
+# =============================================================================
+with tab6:
+    st.header("🎯 Multi-Dimension Scanner")
+    
+    scan_mode = st.radio(
+        "Pilih Mode Scanner:",
+        ["🔍 Hunter: Divergensi (Harga Turun, Akumulasi Naik)",
+         "📋 Custom Watchlist",
+         "📊 Sector Rotation"],
+        horizontal=True
+    )
+    
+    if scan_mode == "🔍 Hunter: Divergensi (Harga Turun, Akumulasi Naik)":
+        st.subheader("💎 Deteksi Saham 'Salah Harga'")
+        
+        lookback = st.slider("Periode Analisa (hari)", 10, 90, 30)
+        
+        # Get first and last date in period
+        end_date_div = df_filtered['Last Trading Date'].max()
+        start_date_div = end_date_div - timedelta(days=lookback)
+        
+        # Calculate price change
+        df_period = df_filtered[
+            (df_filtered['Last Trading Date'] >= start_date_div) &
+            (df_filtered['Last Trading Date'] <= end_date_div)
+        ]
+        
+        price_start = df_period.sort_values('Last Trading Date').groupby('Stock Code')['Close'].first()
+        price_end = df_period.sort_values('Last Trading Date').groupby('Stock Code')['Close'].last()
+        
+        df_div = pd.DataFrame({'Price_Start': price_start, 'Price_End': price_end})
+        df_div['Price_Chg_Pct'] = (df_div['Price_End'] - df_div['Price_Start']) / df_div['Price_Start'] * 100
+        
+        # Filter price down
+        df_div = df_div[df_div['Price_Chg_Pct'] <= -5]
+        
+        # Add latest data
+        latest = df_filtered.sort_values('Last Trading Date').groupby('Stock Code').last()
+        df_div = df_div.merge(latest[['Smart_Money_Score', 'Holder_Score', 'Foreign_Score', 
+                                      'Float_Domination_Score']], left_index=True, right_index=True, how='left')
+        
+        # Filter for accumulation scores
+        df_div = df_div[
+            (df_div['Smart_Money_Score'] >= 50) |
+            (df_div['Holder_Score'] >= 50)
+        ].sort_values('Float_Domination_Score', ascending=False)
+        
+        st.success(f"Ditemukan {len(df_div)} saham dengan potensi divergensi")
+        
+        if not df_div.empty:
+            st.dataframe(
+                df_div.reset_index()[['Stock Code', 'Price_Start', 'Price_End', 'Price_Chg_Pct',
+                                     'Smart_Money_Score', 'Holder_Score', 'Float_Domination_Score']].head(50),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Price_Start': st.column_config.NumberColumn(format="Rp %d"),
+                    'Price_End': st.column_config.NumberColumn(format="Rp %d"),
+                    'Price_Chg_Pct': st.column_config.NumberColumn(format="%.2f%%")
+                }
+            )
+    
+    elif scan_mode == "📋 Custom Watchlist":
         st.subheader("📋 Watchlist Personal")
         
-        all_stocks = sorted(df_harian['Stock Code'].unique())
+        all_stocks = sorted(df_filtered['Stock Code'].unique())
         default_stocks = [s for s in ["BBCA", "BBRI", "ADRO", "TLKM"] if s in all_stocks]
         watchlist = st.multiselect("Pilih Saham:", all_stocks, default=default_stocks)
         
         if watchlist:
-            df_watch_harian = df_harian[df_harian['Stock Code'].isin(watchlist)]
-            df_watch_5 = df_master[df_master['Kode Efek'].isin(watchlist)] if not df_master.empty else pd.DataFrame()
+            df_watch = df_filtered[df_filtered['Stock Code'].isin(watchlist)].copy()
             
-            st.markdown("### 🚦 Status Watchlist")
-            summary_watch = []
+            # Get latest for each
+            df_latest = df_watch.sort_values('Last Trading Date').groupby('Stock Code').last().reset_index()
             
-            for stock in watchlist:
-                last_row = df_watch_harian[df_watch_harian['Stock Code'] == stock].sort_values('Last Trading Date').iloc[-1] if not df_watch_harian[df_watch_harian['Stock Code'] == stock].empty else None
-                
-                act_5 = "-"
-                if not df_watch_5.empty:
-                    df_s = df_watch_5[df_watch_5['Kode Efek'] == stock].sort_values('Tanggal_Data', ascending=False).head(5)
-                    if not df_s.empty:
-                        last_act = df_s.iloc[0]['Aksi']
-                        act_5 = f"{last_act} ({df_s.iloc[0]['Tanggal_Data'].strftime('%d/%m')})"
-                
-                if last_row is not None:
-                    summary_watch.append({
-                        "Code": stock,
-                        "Close_Raw": last_row['Close'], # Simpan raw utk sorting jk perlu
-                        "Chg_Raw": last_row['Change %'],
-                        "Vol_Raw": last_row.get('Volume Spike (x)', 0),
-                        "Flow_Raw": last_row.get('Net Foreign Flow', 0),
-                        "5% Activity": act_5
-                    })
+            st.dataframe(
+                df_latest[['Stock Code', 'Close', 'Change %', 'Float_Domination_Score',
+                          'Domination_Level', 'Smart_Money_Signal', 'Holder_Movement_Signal',
+                          'Foreign_Sentiment']],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Close': st.column_config.NumberColumn(format="Rp %d"),
+                    'Change %': st.column_config.NumberColumn(format="%.2f%%")
+                }
+            )
+    
+    else:  # Sector Rotation
+        st.subheader("📊 Sector Rotation Analysis")
+        
+        if 'Sector' in df_filtered.columns:
+            sector_agg = df_filtered.groupby('Sector').agg({
+                'Float_Domination_Score': 'mean',
+                'Smart_Money_Score': 'mean',
+                'Holder_Score': 'mean',
+                'Foreign_Score': 'mean',
+                'Stock Code': 'count'
+            }).round(2).reset_index()
+            sector_agg.columns = ['Sector', 'Avg_Domination', 'Avg_SmartMoney', 
+                                 'Avg_Holder', 'Avg_Foreign', 'Stock_Count']
             
-            df_sum_w = pd.DataFrame(summary_watch)
+            sector_agg = sector_agg.sort_values('Avg_Domination', ascending=False)
             
-            # --- APPLY FORMATTING ---
-            if not df_sum_w.empty:
-                df_sum_w['Harga'] = df_sum_w['Close_Raw'].apply(format_rupiah)
-                df_sum_w['Chg %'] = df_sum_w['Chg_Raw'].apply(lambda x: f"{x:.2f}%")
-                df_sum_w['Vol Spike'] = df_sum_w['Vol_Raw'].apply(lambda x: f"{x:.1f}x")
-                df_sum_w['Foreign Flow'] = df_sum_w['Flow_Raw'].apply(format_rupiah)
-                
-                st.dataframe(
-                    df_sum_w[['Code', 'Harga', 'Chg %', 'Vol Spike', 'Foreign Flow', '5% Activity']],
-                    hide_index=True,
-                    use_container_width=True
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                st.dataframe(sector_agg, use_container_width=True, hide_index=True)
+            
+            with col2:
+                fig = px.bar(
+                    sector_agg.head(10),
+                    x='Avg_Domination',
+                    y='Sector',
+                    orientation='h',
+                    title="Top 10 Sectors by Domination Score",
+                    color='Avg_Domination',
+                    color_continuous_scale='Viridis'
                 )
-            
-            st.markdown("---")
-            for stock in watchlist:
-                with st.expander(f"🔍 Detail {stock}"):
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        st.write("**Data Harian (5 Hari)**")
-                        # Format ulang data harian untuk detail
-                        d_h = df_watch_harian[df_watch_harian['Stock Code'] == stock].tail(5).copy()
-                        d_h['Close'] = d_h['Close'].apply(format_rupiah)
-                        d_h['Volume'] = d_h['Volume'].apply(format_lembar)
-                        d_h['Value'] = d_h['Value'].apply(format_rupiah)
-                        st.dataframe(d_h[['Last Trading Date', 'Close', 'Change %', 'Volume', 'Volume Spike (x)']], use_container_width=True, hide_index=True)
-                    with col_b:
-                        st.write("**Aktivitas 5% Terakhir**")
-                        if not df_watch_5.empty:
-                             d_5 = df_watch_5[df_watch_5['Kode Efek'] == stock].tail(5).copy()
-                             d_5['Jumlah Saham (Curr)'] = d_5['Jumlah Saham (Curr)'].apply(format_lembar)
-                             st.dataframe(d_5[['Tanggal_Data', 'UBO', 'Aksi', 'Jumlah Saham (Curr)']], use_container_width=True, hide_index=True)
-        else:
-            st.info("Silakan pilih saham.")
+                st.plotly_chart(fig, use_container_width=True)
 
 # =============================================================================
 # FOOTER
 # =============================================================================
 st.markdown("---")
-st.caption("🐋 Bandar Eye IDX - Institutional Grade | Data diproses di Colab, dashboard di Streamlit")
-st.caption(f"Last Updated: {datetime.now().strftime('%d-%m-%Y %H:%M')} | {len(df_master) if not df_master.empty else 0:,} records 5% ownership")
+st.caption("🐋 Bandar Eye IDX - Institutional Grade | Float Domination Edition v3.0")
+st.caption(f"Last Updated: {datetime.now().strftime('%d-%m-%Y %H:%M')}")
